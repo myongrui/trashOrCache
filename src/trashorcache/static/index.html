@@ -23,6 +23,10 @@
   .keep kbd { border-color:#2f6b4a; color:#7fd2a1; }
   .trash kbd { border-color:#6b3530; color:#e19b93; }
   #flash { position:fixed; right:14px; bottom:52px; color:var(--dim); }
+  #sugg { margin-left:auto; }
+  #sugg .d { color:#e19b93; } #sugg .k2 { color:#7fd2a1; }
+  #agree { color:var(--dim); }
+  #agree .hit { color:#7fd2a1; } #agree .miss { color:#e19b93; }
 </style>
 </head>
 <body>
@@ -32,6 +36,8 @@
     <div id="bar"><div></div></div>
     <span id="eta"></span>
     <span id="counts"></span>
+    <span id="sugg"></span>
+    <span id="agree"></span>
   </header>
   <div id="stage"><img id="img" alt=""></div>
   <div id="meta"></div>
@@ -49,6 +55,7 @@ const el = id => document.getElementById(id);
 const PRELOAD = 30;
 
 let items = [], labeled = new Set(), i = 0, startTime = null, sessionCount = 0;
+let agree = 0, asked = 0;
 
 async function boot() {
   const q = await fetch("/api/queue").then(x => x.json());
@@ -69,6 +76,23 @@ function render() {
   el("img").src = `/img/${it.asset_id}`;
   el("pos").textContent = `${i + 1} / ${items.length}`;
   el("bar").firstElementChild.style.width = `${100 * (i + 1) / items.length}%`;
+  el("sugg").innerHTML = it.suggest
+    ? `model: <b class="${it.suggest === "dispose" ? "d" : "k2"}">${it.suggest}</b> <span style="color:#7d828b">rank ${it.pct.toFixed(2)}</span>`
+    : "";
+  el("agree").innerHTML = asked
+    ? `<span class="hit">${agree}/${asked} hit</span> <span class="miss">${asked - agree} miss</span>`
+    : "";
+}
+
+async function refreshAgreement() {
+  const a = await fetch("/api/agreement").then(x => x.json()).catch(() => null);
+  if (!a || !a.n) return;
+  el("agree").innerHTML =
+    `<span class="hit">hit ${a.hit_pct}%</span> / <span class="miss">miss ${a.miss_pct}%</span> ` +
+    `<span style="color:#7d828b">(n=${a.n})</span>`;
+  el("agree").title =
+    `model said dispose: ${a.dispose_calls.hit_pct}% of ${a.dispose_calls.n} agreed\n` +
+    `model said keep: ${a.keep_calls.hit_pct}% of ${a.keep_calls.n} agreed`;
   el("meta").innerHTML = [
     it.file_name, it.source_app ?? "-", it.taken ?? "-",
     `${it.width}x${it.height}`, `${(it.bytes / 1e6).toFixed(2)} MB`,
@@ -92,6 +116,11 @@ async function send(label) {
   startTime ??= Date.now();
   sessionCount++;
   el("flash").textContent = label;
+  if (it.suggest) {
+    asked++;
+    if (label === it.suggest) agree++;
+    el("flash").textContent = label === it.suggest ? `${label} agreed` : `${label} corrected (model said ${it.suggest})`;
+  }
   labeled.add(it.asset_id);
   i++; render(); preload();
   const res = await fetch("/api/label", {
@@ -116,6 +145,7 @@ async function undo() {
 async function refreshStats() {
   const s = await fetch("/api/stats").then(x => x.json());
   el("counts").textContent = Object.entries(s.counts).map(([k, v]) => `${k} ${v}`).join("  ");
+  refreshAgreement();
 }
 
 addEventListener("keydown", e => {

@@ -86,6 +86,31 @@ def add(body: Label) -> JSONResponse:
     return JSONResponse({"ok": True, **row})
 
 
+@app.get("/api/agreement")
+def agreement() -> JSONResponse:
+    lab = {r["asset_id"]: r["label"] for r in read_labels()}
+    done = [x for x in QUEUE_ITEMS if x.get("suggest") and x["asset_id"] in lab]
+    if not done:
+        return JSONResponse({"n": 0})
+
+    def pct(a: int, b: int) -> float:
+        return round(100.0 * a / b, 1) if b else 0.0
+
+    hit = sum(1 for x in done if lab[x["asset_id"]] == x["suggest"])
+    out = {
+        "n": len(done),
+        "hit": hit,
+        "miss": len(done) - hit,
+        "hit_pct": pct(hit, len(done)),
+        "miss_pct": pct(len(done) - hit, len(done)),
+    }
+    for label in ("dispose", "keep"):
+        calls = [x for x in done if x["suggest"] == label]
+        h = sum(1 for x in calls if lab[x["asset_id"]] == label)
+        out[f"{label}_calls"] = {"n": len(calls), "hit": h, "hit_pct": pct(h, len(calls))}
+    return JSONResponse(out)
+
+
 @app.post("/api/undo")
 def undo() -> JSONResponse:
     rows = read_labels()

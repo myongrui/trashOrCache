@@ -12,6 +12,13 @@ MANIFEST = DATA_DIR / "manifest.parquet"
 LABELS = DATA_DIR / "labels.jsonl"
 SCORES = DATA_DIR / "scores.parquet"
 MODEL = DATA_DIR / "model.npz"
+QUALITY = DATA_DIR / "quality.parquet"
+
+QUALITY_FIELDS = [
+    "sharpness", "sharpness_center", "sharpness_edge", "clip_high", "clip_low",
+    "luma_mean", "luma_std", "noise", "colorfulness", "entropy", "flat_bright",
+    "face_area_max", "face_area_sum", "big_faces",
+]
 
 
 def sha256(path) -> str:
@@ -51,6 +58,44 @@ def kmeans(X: np.ndarray, k: int, iters: int = 25, seed: int = 0) -> np.ndarray:
             if members.any():
                 C[j] = X[members].mean(0)
     return assign
+
+
+def tabular_raw(df: pl.DataFrame) -> np.ndarray:
+    ar = df["aspect_ratio"].fill_null(1.0).clip(0.25, 4.0)
+    apps = set(df["source_app"].drop_nulls().to_list()) - {"whatsapp", "camera"}
+    feats = [
+        (df["ocr_chars"] > 0).cast(pl.Float32).alias("has_ocr"),
+        df["ocr_chars"].log1p().alias("log_ocr"),
+        (df["face_count"] > 0).cast(pl.Float32).alias("has_faces"),
+        df["face_count"].clip(0, 10).cast(pl.Float32).alias("n_faces"),
+        ar.cast(pl.Float32).alias("aspect"),
+        df["file_size"].log1p().alias("log_bytes"),
+        (df["width"] * df["height"]).log1p().alias("log_pixels"),
+        (df["source_app"] == "whatsapp").cast(pl.Float32).alias("is_whatsapp"),
+        (df["source_app"] == "camera").cast(pl.Float32).alias("is_camera"),
+        df["source_app"].is_in(list(apps)).cast(pl.Float32).alias("is_screenshot_app"),
+        df["latitude"].is_not_null().cast(pl.Float32).alias("has_gps"),
+        df["make"].is_not_null().cast(pl.Float32).alias("has_make"),
+        df["exif_taken_at"].is_not_null().cast(pl.Float32).alias("has_exif_date"),
+    ]
+    return np.nan_to_num(df.select(feats).to_numpy().astype(np.float32))
+
+
+def quality_raw(df: pl.DataFrame) -> np.ndarray:
+    q = pl.read_parquet(QUALITY).select(["id", *QUALITY_FIELDS])
+    aligned = pl.DataFrame({"id": df["id"]}).join(q, on="id", how="left")
+    return np.nan_to_num(aligned.select(QUALITY_FIELDS).to_numpy().astype(np.float32))
+
+
+def standardize(T: np.ndarray, mu: np.ndarray | None = None, sd: np.ndarray | None = None):
+    if mu is None:
+        mu, sd = T.mean(0), T.std(0)
+        sd[sd == 0] = 1.0
+    return (T - mu) / sd, mu, sd
+
+
+def tabular(df: pl.DataFrame) -> np.ndarray:
+    return standardize(tabular_raw(df))[0]
 
 
 def clusters(X: np.ndarray, k: int = 150, seed: int = 0) -> np.ndarray:

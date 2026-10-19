@@ -7,9 +7,11 @@ import numpy as np
 import polars as pl
 
 from .config import DATA_DIR
-from .store import LABELS, clusters, load_aligned
+from .store import LABELS, SCORES, clusters, load_aligned
 
 QUEUE = DATA_DIR / "queue.json"
+
+FIELDS = ("id", "originalFileName", "source_app", "file_created_at", "width", "height", "file_size", "ocr_chars", "face_count")
 
 
 def cluster_path(C: np.ndarray, start: int) -> list[int]:
@@ -39,28 +41,19 @@ def nn_tour(V: np.ndarray) -> list[int]:
     return order
 
 
-def build(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int) -> list[dict]:
+def labelled_ids() -> set[str]:
+    if not LABELS.exists():
+        return set()
+    return {json.loads(line)["asset_id"] for line in LABELS.read_text().splitlines() if line.strip()}
+
+
+def coverage(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int, done: set[str]) -> list[int]:
     assign = clusters(X, n_clusters, seed)
     cents = np.stack([X[assign == j].mean(0) for j in range(n_clusters)])
     cents /= np.linalg.norm(cents, axis=1, keepdims=True)
 
-    done = set()
-    if LABELS.exists():
-        for line in LABELS.read_text().splitlines():
-            if line.strip():
-                done.add(json.loads(line)["asset_id"])
-
     ids = df["id"].to_list()
-    taken = df["file_created_at"].to_list()
-    names = df["originalFileName"].to_list()
-    apps = df["source_app"].to_list()
-    widths = df["width"].to_list()
-    heights = df["height"].to_list()
-    sizes = df["file_size"].to_list()
-    ocr = df["ocr_chars"].to_list()
-    faces = df["face_count"].to_list()
-    unused = np.array([ids[i] not in done for i in range(len(ids))])
-
+    unused = np.array([i not in done for i in ids])
     per_cluster = max(1, int(np.ceil(n / n_clusters)))
     selected: list[int] = []
     seen: set[int] = set()
@@ -69,12 +62,9 @@ def build(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int) -
         members = np.flatnonzero((assign == j) & unused)
         if members.size == 0:
             continue
-        anchor = int(members[np.argmax(X[members] @ cents[j])])
-        picked = [anchor]
+        picked = [int(members[np.argmax(X[members] @ cents[j])])]
         while len(picked) < per_cluster and len(picked) < members.size:
             pool = members[~np.isin(members, picked)]
-            if pool.size == 0:
-                break
             sims = (X[pool] @ X[picked].T).max(axis=1)
             fresh = pool[sims < 0.995]
             if fresh.size == 0:
@@ -88,35 +78,92 @@ def build(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int) -
             break
 
     selected = selected[:n]
-    selected = [selected[k] for k in nn_tour(X[selected])]
-    return [
-        {
-            "asset_id": ids[i],
-            "file_name": names[i],
-            "source_app": apps[i],
-            "taken": taken[i].strftime("%Y-%m-%d") if taken[i] else None,
-            "width": widths[i],
-            "height": heights[i],
-            "bytes": sizes[i],
-            "ocr_chars": ocr[i],
-            "face_count": faces[i],
-            "cluster": int(assign[i]),
+    return [selected[k] for k in nn_tour(X[selected])]
+
+
+def model_queue(df: pl.DataFrame, X: np.ndarray, n: int, done: set[str], hard: bool) -> list[tuple[int, float]]:
+    scores = pl.read_parquet(SCORES)
+    if scores.height != df.height or scores["id"].to_list() != df["id"].to_list():
+        raise SystemExit("scores.parquet is stale relative to the manifest - re-run probe")
+
+    ids = df["id"].to_list()
+    p = scores["p_dispose"].to_numpy()
+    keep_mask = np.array([a not in done and np.isfinite(p[i]) for i, a in enumerate(ids)])
+    if hard:
+        keep_mask &= df["ocr_chars"].to_numpy() == 0
+        keep_mask &= df["source_app"].fill_null("").to_numpy() != "whatsapp"
+    pool = np.flatnonzero(keep_mask)
+    if pool.size == 0:
+        return []
+
+    ranks = np.empty(pool.size)
+    ranks[np.argsort(np.argsort(p[pool]))] = np.arange(pool.size)
+    pct = ranks / max(pool.size - 1, 1)
+
+    n_unc = int(n * 0.5)
+    n_hi = int(n * 0.25)
+    n_lo = n - n_unc - n_hi
+
+    order = np.argsort(np.abs(p[pool] - np.median(p[pool])))
+    unc = pool[order[:n_unc]]
+    hi = pool[np.argsort(-p[pool])[:n_hi]]
+    lo = pool[np.argsort(p[pool])[:n_lo]]
+    chosen = list(dict.fromkeys([*unc, *hi, *lo]))
+
+    rank_of = {int(i): float(pct[k]) for k, i in enumerate(pool)}
+    ordered = [chosen[k] for k in nn_tour(X[chosen])]
+    return [(i, rank_of[i]) for i in ordered]
+
+
+def to_items(df: pl.DataFrame, idx: list[int], pct: dict[int, float] | None, assign: np.ndarray | None) -> list[dict]:
+    cols = {f: df[f].to_list() for f in FIELDS}
+    out = []
+    for i in idx:
+        item = {
+            "asset_id": cols["id"][i],
+            "file_name": cols["originalFileName"][i],
+            "source_app": cols["source_app"][i],
+            "taken": cols["file_created_at"][i].strftime("%Y-%m-%d") if cols["file_created_at"][i] else None,
+            "width": cols["width"][i],
+            "height": cols["height"][i],
+            "bytes": cols["file_size"][i],
+            "ocr_chars": cols["ocr_chars"][i],
+            "face_count": cols["face_count"][i],
+            "cluster": int(assign[i]) if assign is not None else None,
         }
-        for i in selected
-    ]
+        if pct is not None:
+            item["pct"] = pct[i]
+            item["suggest"] = "dispose" if pct[i] > 0.5 else "keep"
+        out.append(item)
+    return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["coverage", "model"], default="coverage")
     ap.add_argument("--n", type=int, default=400)
-    ap.add_argument("--clusters", type=int, default=128)
+    ap.add_argument("--clusters", type=int, default=150)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--subset", choices=["all", "hard"], default="all")
     args = ap.parse_args()
 
     df, X = load_aligned()
-    queue = build(df, X, args.n, args.clusters, args.seed)
-    QUEUE.write_text(json.dumps(queue, indent=1) + "\n")
-    print(f"queue {len(queue)} images, {len({q['cluster'] for q in queue})} clusters -> {QUEUE}")
+    done = labelled_ids()
+    assign = clusters(X, args.clusters, args.seed)
+
+    if args.mode == "coverage":
+        idx = coverage(df, X, args.n, args.clusters, args.seed, done)
+        items = to_items(df, idx, None, assign)
+    else:
+        pairs = model_queue(df, X, args.n, done, args.subset == "hard")
+        idx = [i for i, _ in pairs]
+        items = to_items(df, idx, {i: q for i, q in pairs}, assign)
+
+    QUEUE.write_text(json.dumps(items, indent=1) + "\n")
+    print(f"{args.mode} queue: {len(items)} images, {len({x['cluster'] for x in items})} clusters -> {QUEUE}")
+    if items and "suggest" in items[0]:
+        n_d = sum(1 for x in items if x["suggest"] == "dispose")
+        print(f"  model suggests dispose {n_d}, keep {len(items) - n_d}")
 
 
 if __name__ == "__main__":
