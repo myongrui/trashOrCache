@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TrashOrCache</title>
+<style>
+  :root { --bg:#111214; --fg:#e8e8ea; --dim:#7d828b; --keep:#3fa46a; --trash:#c4544a; --line:#23262b; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow:hidden; }
+  #wrap { display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; gap:18px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line); }
+  header b { font-weight:600; }
+  #bar { flex:1; height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  #bar div { height:100%; width:0; background:var(--keep); transition:width .15s; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; padding:10px; }
+  #img { max-width:100%; max-height:100%; object-fit:contain; background:#000; }
+  #meta { display:none; gap:14px; padding:6px 14px; color:var(--dim); border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; }
+  #meta.on { display:flex; }
+  footer { display:flex; gap:6px; padding:8px 12px; border-top:1px solid var(--line); flex-wrap:wrap; }
+  kbd { background:#1d2025; border:1px solid #2c3037; border-radius:4px; padding:2px 6px; color:var(--fg); }
+  .k { display:flex; gap:6px; align-items:center; color:var(--dim); margin-right:12px; }
+  .keep kbd { border-color:#2f6b4a; color:#7fd2a1; }
+  .trash kbd { border-color:#6b3530; color:#e19b93; }
+  #flash { position:fixed; right:14px; bottom:52px; color:var(--dim); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <b id="pos">0 / 0</b>
+    <div id="bar"><div></div></div>
+    <span id="eta"></span>
+    <span id="counts"></span>
+  </header>
+  <div id="stage"><img id="img" alt=""></div>
+  <div id="meta"></div>
+  <footer>
+    <span class="k keep"><kbd>1</kbd> keep</span>
+    <span class="k trash"><kbd>2</kbd> dispose</span>
+    <span class="k"><kbd>0</kbd> skip</span>
+    <span class="k"><kbd>backspace</kbd> undo</span>
+    <span class="k"><kbd>m</kbd> meta</span>
+  </footer>
+</div>
+<div id="flash"></div>
+<script>
+const el = id => document.getElementById(id);
+const PRELOAD = 30;
+
+let items = [], labeled = new Set(), i = 0, startTime = null, sessionCount = 0;
+
+async function boot() {
+  const q = await fetch("/api/queue").then(x => x.json());
+  items = q.items; labeled = new Set(q.labeled);
+  const first = items.findIndex(it => !labeled.has(it.asset_id));
+  i = first === -1 ? items.length : first;
+  render(); preload();
+}
+
+function render() {
+  if (i >= items.length) {
+    el("img").removeAttribute("src");
+    el("pos").textContent = `${items.length} / ${items.length}  done`;
+    el("eta").textContent = "";
+    return;
+  }
+  const it = items[i];
+  el("img").src = `/img/${it.asset_id}`;
+  el("pos").textContent = `${i + 1} / ${items.length}`;
+  el("bar").firstElementChild.style.width = `${100 * (i + 1) / items.length}%`;
+  el("meta").innerHTML = [
+    it.file_name, it.source_app ?? "-", it.taken ?? "-",
+    `${it.width}x${it.height}`, `${(it.bytes / 1e6).toFixed(2)} MB`,
+    `ocr ${it.ocr_chars}`, `faces ${it.face_count}`, `c${it.cluster}`,
+  ].map(s => `<span>${s}</span>`).join("");
+  if (startTime) {
+    const rate = sessionCount / ((Date.now() - startTime) / 60000);
+    el("eta").textContent = rate > 0.2 ? `${Math.ceil((items.length - i) / rate)} min left` : "";
+  }
+}
+
+function preload() {
+  for (let k = i + 1; k <= Math.min(i + PRELOAD, items.length - 1); k++) {
+    const im = new Image(); im.src = `/img/${items[k].asset_id}`;
+  }
+}
+
+async function send(label) {
+  const it = items[i];
+  if (!it) return;
+  startTime ??= Date.now();
+  sessionCount++;
+  el("flash").textContent = label;
+  labeled.add(it.asset_id);
+  i++; render(); preload();
+  const res = await fetch("/api/label", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ asset_id: it.asset_id, label }),
+  }).catch(() => null);
+  if (!res || !res.ok) el("flash").textContent = "label failed -- check server";
+  refreshStats();
+}
+
+async function undo() {
+  if (i === 0) return;
+  const r = await fetch("/api/undo", { method: "POST" });
+  if (!r.ok) return;
+  const { dropped } = await r.json();
+  labeled.delete(dropped.asset_id);
+  i = Math.max(0, items.findIndex(x => x.asset_id === dropped.asset_id));
+  el("flash").textContent = `undone ${dropped.label}`;
+  render(); refreshStats();
+}
+
+async function refreshStats() {
+  const s = await fetch("/api/stats").then(x => x.json());
+  el("counts").textContent = Object.entries(s.counts).map(([k, v]) => `${k} ${v}`).join("  ");
+}
+
+addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "Backspace") { e.preventDefault(); undo(); return; }
+  if (e.key === "m") { el("meta").classList.toggle("on"); return; }
+  if (e.key === "1") { e.preventDefault(); send("keep"); return; }
+  if (e.key === "2") { e.preventDefault(); send("dispose"); return; }
+  if (e.key === "0") { e.preventDefault(); send("skip"); }
+});
+
+boot().then(refreshStats);
+</script>
+</body>
+</html>
