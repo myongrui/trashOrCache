@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -81,7 +82,7 @@ def coverage(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int
     return [selected[k] for k in nn_tour(X[selected])]
 
 
-def model_queue(df: pl.DataFrame, X: np.ndarray, n: int, done: set[str], hard: bool) -> list[tuple[int, float]]:
+def model_queue(df, X, n, done, hard, random_only=False) -> list[tuple[int, float, str]]:
     scores = pl.read_parquet(SCORES)
     if scores.height != df.height or scores["id"].to_list() != df["id"].to_list():
         raise SystemExit("scores.parquet is stale relative to the manifest - re-run probe")
@@ -100,22 +101,26 @@ def model_queue(df: pl.DataFrame, X: np.ndarray, n: int, done: set[str], hard: b
     ranks[np.argsort(np.argsort(p[pool]))] = np.arange(pool.size)
     pct = ranks / max(pool.size - 1, 1)
 
-    n_unc = int(n * 0.5)
-    n_hi = int(n * 0.25)
-    n_lo = n - n_unc - n_hi
+    rank_of = {int(i): float(pct[k]) for k, i in enumerate(pool)}
+    if random_only:
+        pick = np.random.default_rng().choice(pool, size=min(n, pool.size), replace=False)
+        return [(int(i), rank_of[int(i)], "random") for i in pick]
 
+    n_unc = int(n * 0.5)
+    n_rand = n - n_unc
     order = np.argsort(np.abs(p[pool] - np.median(p[pool])))
     unc = pool[order[:n_unc]]
-    hi = pool[np.argsort(-p[pool])[:n_hi]]
-    lo = pool[np.argsort(p[pool])[:n_lo]]
-    chosen = list(dict.fromkeys([*unc, *hi, *lo]))
+    rest = np.setdiff1d(pool, unc)
+    rand = np.random.default_rng().choice(rest, size=min(n_rand, rest.size), replace=False)
 
-    rank_of = {int(i): float(pct[k]) for k, i in enumerate(pool)}
+    strata = {int(i): "uncertain" for i in unc}
+    strata.update({int(i): "random" for i in rand})
+    chosen = list(dict.fromkeys([*unc, *rand]))
     ordered = [chosen[k] for k in nn_tour(X[chosen])]
-    return [(i, rank_of[i]) for i in ordered]
+    return [(i, rank_of[i], strata[i]) for i in ordered]
 
 
-def to_items(df: pl.DataFrame, idx: list[int], pct: dict[int, float] | None, assign: np.ndarray | None) -> list[dict]:
+def to_items(df, idx, pct=None, assign=None, stratum=None) -> list[dict]:
     cols = {f: df[f].to_list() for f in FIELDS}
     out = []
     for i in idx:
@@ -134,13 +139,15 @@ def to_items(df: pl.DataFrame, idx: list[int], pct: dict[int, float] | None, ass
         if pct is not None:
             item["pct"] = pct[i]
             item["suggest"] = "dispose" if pct[i] > 0.5 else "keep"
+            item["stratum"] = stratum[i]
         out.append(item)
     return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["coverage", "model"], default="coverage")
+    ap.add_argument("--mode", choices=["coverage", "model", "eval", "agree"], default="coverage")
+    ap.add_argument("--out", default=str(QUEUE))
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--clusters", type=int, default=150)
     ap.add_argument("--seed", type=int, default=0)
@@ -151,16 +158,23 @@ def main() -> None:
     done = labelled_ids()
     assign = clusters(X, args.clusters, args.seed)
 
-    if args.mode == "coverage":
+    if args.mode == "agree":
+        seen = sorted(done)
+        if not seen:
+            raise SystemExit("no labels to re-serve")
+        pick = np.random.default_rng().choice(seen, size=min(args.n, len(seen)), replace=False)
+        idx = [pos for pos in (df["id"].to_list().index(a) for a in pick)]
+        items = to_items(df, idx, None, assign)
+    elif args.mode == "coverage":
         idx = coverage(df, X, args.n, args.clusters, args.seed, done)
         items = to_items(df, idx, None, assign)
     else:
-        pairs = model_queue(df, X, args.n, done, args.subset == "hard")
-        idx = [i for i, _ in pairs]
-        items = to_items(df, idx, {i: q for i, q in pairs}, assign)
+        pairs = model_queue(df, X, args.n, done, args.subset == "hard", random_only=args.mode == "eval")
+        idx = [i for i, _, _ in pairs]
+        items = to_items(df, idx, {i: q for i, q, _ in pairs}, assign, {i: s for i, _, s in pairs})
 
-    QUEUE.write_text(json.dumps(items, indent=1) + "\n")
-    print(f"{args.mode} queue: {len(items)} images, {len({x['cluster'] for x in items})} clusters -> {QUEUE}")
+    Path(args.out).write_text(json.dumps(items, indent=1) + "\n")
+    print(f"{args.mode} queue: {len(items)} images -> {args.out}")
     if items and "suggest" in items[0]:
         n_d = sum(1 for x in items if x["suggest"] == "dispose")
         print(f"  model suggests dispose {n_d}, keep {len(items) - n_d}")

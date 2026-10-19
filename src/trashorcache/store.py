@@ -6,10 +6,10 @@ import json
 import numpy as np
 import polars as pl
 
-from .config import DATA_DIR
+from .config import DATA_DIR, LABELS_PATH
 
 MANIFEST = DATA_DIR / "manifest.parquet"
-LABELS = DATA_DIR / "labels.jsonl"
+LABELS = LABELS_PATH
 SCORES = DATA_DIR / "scores.parquet"
 MODEL = DATA_DIR / "model.npz"
 QUALITY = DATA_DIR / "quality.parquet"
@@ -45,6 +45,27 @@ def read_labels() -> list[dict]:
     if not LABELS.exists():
         return []
     return [json.loads(line) for line in LABELS.read_text().splitlines() if line.strip()]
+
+
+def groups_near_dup(X: np.ndarray, thresh: float = 0.95) -> np.ndarray:
+    n = len(X)
+    parent = list(range(n))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for start in range(0, n, 500):
+        block = X[start : start + 500] @ X.T
+        ii, jj = np.where(block > thresh)
+        for a, b in zip(ii + start, jj):
+            if a < b:
+                ra, rb = find(int(a)), find(int(b))
+                if ra != rb:
+                    parent[ra] = rb
+    return np.array([find(i) for i in range(n)])
 
 
 def kmeans(X: np.ndarray, k: int, iters: int = 25, seed: int = 0) -> np.ndarray:

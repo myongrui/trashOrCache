@@ -12,10 +12,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .config import DATA_DIR
+from .config import DATA_DIR, LABELS_PATH, PORT, QUEUE_PATH
 
-LABELS = DATA_DIR / "labels.jsonl"
-QUEUE = DATA_DIR / "queue.json"
+LABELS = LABELS_PATH
+QUEUE = QUEUE_PATH
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI()
@@ -97,6 +97,8 @@ def agreement() -> JSONResponse:
         return round(100.0 * a / b, 1) if b else 0.0
 
     hit = sum(1 for x in done if lab[x["asset_id"]] == x["suggest"])
+    rand = [x for x in done if x.get("stratum") == "random"]
+    rand_hit = sum(1 for x in rand if lab[x["asset_id"]] == x["suggest"])
     out = {
         "n": len(done),
         "hit": hit,
@@ -104,6 +106,8 @@ def agreement() -> JSONResponse:
         "hit_pct": pct(hit, len(done)),
         "miss_pct": pct(len(done) - hit, len(done)),
     }
+    if rand:
+        out["random"] = {"n": len(rand), "hit": rand_hit, "hit_pct": pct(rand_hit, len(rand))}
     for label in ("dispose", "keep"):
         calls = [x for x in done if x["suggest"] == label]
         h = sum(1 for x in calls if lab[x["asset_id"]] == label)
@@ -128,7 +132,8 @@ def undo() -> JSONResponse:
 
 
 def main() -> None:
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    print(f"labels -> {LABELS}\nqueue  -> {QUEUE}\nserving on http://127.0.0.1:{PORT}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
 
 
 if __name__ == "__main__":

@@ -11,31 +11,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold
 from sklearn.neighbors import KNeighborsClassifier
 
-from .store import clusters, load_aligned, quality_raw, read_labels, standardize, tabular
-
-NEAR_DUP = 0.95
-
-
-def groups_near_dup(X: np.ndarray) -> np.ndarray:
-    n = len(X)
-    parent = list(range(n))
-
-    def find(a: int) -> int:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    for start in range(0, n, 500):
-        block = X[start : start + 500] @ X.T
-        ii, jj = np.where(block > NEAR_DUP)
-        for a, b in zip(ii + start, jj):
-            if a < b:
-                ra, rb = find(int(a)), find(int(b))
-                if ra != rb:
-                    parent[ra] = rb
-    return np.array([find(i) for i in range(n)])
-
+from .store import groups_near_dup, load_aligned, quality_raw, read_labels, standardize, tabular
 
 def mlp_fit_predict(Xtr, ytr, Xte, seed=0):
     torch.manual_seed(seed)

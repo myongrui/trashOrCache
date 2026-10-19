@@ -3,6 +3,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("TOC_DATA", ROOT / "data"))
+LABELS_PATH = Path(os.environ.get("TOC_LABELS", DATA_DIR / "labels.jsonl"))
+QUEUE_PATH = Path(os.environ.get("TOC_QUEUE", DATA_DIR / "queue.json"))
+PORT = int(os.environ.get("TOC_PORT", 8765))
 
 IMMICH_CONTAINER = os.environ.get("TOC_CONTAINER", "immich_postgres")
 IMMICH_DB = os.environ.get("TOC_DB", "immich")
