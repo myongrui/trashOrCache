@@ -40,14 +40,82 @@ def complete_link(members, S, order, thr, cap, days=None) -> list[list[int]]:
     return [g for g in groups if len(g) > 1]
 
 
+def day_components(pool: np.ndarray, S: np.ndarray, days: np.ndarray, thr: float) -> list[list[int]]:
+    """Connected components over same-day pairs above thr. Guarantees that any two
+    qualifying images share a group; no partition paradox."""
+    parent = {int(i): int(i) for i in pool}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    by_day: dict[str, list[int]] = {}
+    for i in pool:
+        by_day.setdefault(days[i], []).append(int(i))
+    for members in by_day.values():
+        if len(members) < 2:
+            continue
+        M = S[members] @ S[members].T
+        ii, jj = np.where(M >= thr)
+        for a, b in zip(ii, jj):
+            if a < b:
+                ra, rb = find(members[a]), find(members[b])
+                if ra != rb:
+                    parent[ra] = rb
+    out: dict[int, list[int]] = {}
+    for i in pool:
+        out.setdefault(find(int(i)), []).append(int(i))
+    return [g for g in out.values() if len(g) > 1]
+
+
+def merge_groups(groups, S, days, order, thr, cap) -> list[list[int]]:
+    """Union groups that contain a same-day pair above thr, then re-split."""
+    if not groups:
+        return []
+    ids = [i for g in groups for i in g]
+    gid = [k for k, g in enumerate(groups) for _ in g]
+    V = S[ids]
+    C = V @ V.T
+    parent = list(range(len(groups)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    n = len(ids)
+    for a in range(n):
+        row = C[a]
+        for b in range(a + 1, n):
+            if gid[a] != gid[b] and row[b] >= thr and days[ids[a]] == days[ids[b]]:
+                ra, rb = find(gid[a]), find(gid[b])
+                if ra != rb:
+                    parent[ra] = rb
+
+    merged: dict[int, list[int]] = {}
+    for k, g in enumerate(groups):
+        merged.setdefault(find(k), []).extend(g)
+
+    out: list[list[int]] = []
+    for root, members in merged.items():
+        if len(members) < 2:
+            continue
+        out.extend(complete_link(np.array(members), S, order, thr, cap, days))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--thr", type=float, default=0.92)
-    ap.add_argument("--cap", type=int, default=25)
+    ap.add_argument("--cap", type=int, default=12)
     ap.add_argument("--k", type=int, default=MICRO)
     ap.add_argument("--out", default=str(DATA_DIR / "clusters.json"))
     ap.add_argument("--sweep", action="store_true")
-    ap.add_argument("--same-day", action="store_true", help="only group images taken on the same date")
+    ap.add_argument("--same-day", action="store_true", default=True)
+    ap.add_argument("--method", choices=["components", "complete"], default="complete")
     args = ap.parse_args()
 
     df, X = load_aligned()
@@ -80,12 +148,16 @@ def main() -> None:
     print(f"\n  {'thr':>5} {'groups':>7} {'images':>7} {'%lib':>6} {'median':>7} {'max':>4}")
     chosen = None
     for thr in thresholds:
-        groups = []
-        for j in range(len(sizes)):
-            mem = pool[assign == j]
-            if mem.size < 2:
-                continue
-            groups.extend(complete_link(mem, S_all, keep_score, thr, args.cap, days if args.same_day else None))
+        if args.method == "components":
+            groups = day_components(pool, S_all, days, thr)
+        else:
+            groups = []
+            for j in range(len(sizes)):
+                mem = pool[assign == j]
+                if mem.size < 2:
+                    continue
+                groups.extend(complete_link(mem, S_all, keep_score, thr, args.cap, days))
+            groups = merge_groups(groups, S_all, days, keep_score, thr, args.cap)
         tot = sum(len(g) for g in groups)
         med = int(np.median([len(g) for g in groups])) if groups else 0
         mx = max((len(g) for g in groups), default=0)
@@ -94,6 +166,19 @@ def main() -> None:
             chosen = groups
 
     if not args.sweep and chosen is not None:
+        seen: dict[int, int] = {}
+        pruned = 0
+        clean: list[list[int]] = []
+        for g in chosen:
+            kept = [i for i in g if i not in seen]
+            pruned += len(g) - len(kept)
+            for i in kept:
+                seen[i] = 1
+            if len(kept) > 1:
+                clean.append(kept)
+        chosen = clean
+        print(f"  invariant: {len(seen)} assets in exactly one group, "
+              f"duplicates removed: {pruned}, groups: {len(chosen)}")
         scores = pl.read_parquet(SCORES) if SCORES.exists() else None
         action = dict(zip(scores["id"].to_list(), scores["action"].to_list())) if scores is not None else {}
         out = []

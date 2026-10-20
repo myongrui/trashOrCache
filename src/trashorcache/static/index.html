@@ -17,8 +17,13 @@
   #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; padding:10px; overflow:auto; }
   #img { max-width:100%; max-height:100%; object-fit:contain; background:#000; }
   #grid { display:grid; gap:8px; width:100%; align-content:start; }
-  .cell { position:relative; background:#000; border:2px solid #2a2e34; border-radius:4px; overflow:hidden; }
-  .cell.best { border-color:#2f6b4a; }
+  .cell { position:relative; background:#000; border:2px solid #2a2e34; border-radius:4px;
+    overflow:hidden; cursor:pointer; }
+  .cell:hover { border-color:#4a515c; }
+  .cell.sel { border-color:#3fa46a; box-shadow:0 0 0 1px #3fa46a inset; }
+  .cell.sel::after { content:"keep"; position:absolute; top:4px; right:4px; background:#3fa46a;
+    color:#04170c; font-size:11px; padding:1px 6px; border-radius:3px; }
+  .cell.best .n { background:#2f6b4a; }
   .cell img { width:100%; height:100%; object-fit:contain; display:block; }
   .cell .n { position:absolute; top:4px; left:4px; background:#000a; color:#fff; padding:1px 6px; border-radius:3px; }
   .cell .cap { position:absolute; bottom:0; left:0; right:0; background:#000b; color:#aeb4bd;
@@ -70,6 +75,7 @@ async function boot() {
     ? !it.members.every(m => labeled.has(m.asset_id))
     : !labeled.has(it.asset_id));
   i = first === -1 ? items.length : first;
+  selected = new Set();
   render(); preload();
 }
 
@@ -105,7 +111,7 @@ function renderGroup(it) {
   const cols = n <= 4 ? n : Math.ceil(Math.sqrt(n * 1.6));
   el("kind").textContent = `${it.kind} group · ${n} images`;
   el("stage").innerHTML = `<div id="grid" style="grid-template-columns:repeat(${cols},1fr)">` +
-    it.members.map((m, k) => `<div class="cell ${k === 0 ? "best" : ""}">
+    it.members.map((m, k) => `<div class="cell ${k === 0 ? "best" : ""}" data-k="${k}">
         <span class="n">${k + 1}</span>
         <img src="/img/${m.asset_id}" alt="">
         <span class="cap">${m.file_name} · ${m.width}x${m.height} · ${(m.bytes / 1e3).toFixed(0)}KB</span>
@@ -114,11 +120,16 @@ function renderGroup(it) {
   cells.forEach(im => { im.style.height = `${Math.max(120, Math.floor((el("stage").clientHeight - 40) / Math.ceil(n / cols)) - 8)}px`; });
   el("meta").innerHTML = [`best guess: ${it.members[0].file_name}`, `saves ${n - 1} image(s)`]
     .map(s => `<span>${s}</span>`).join("");
-  el("foot").innerHTML = `<span class="k keep"><kbd>1</kbd>-<kbd>${n}</kbd> keep that one, dispose rest</span>
+  el("foot").innerHTML = `<span class="k keep"><kbd>click</kbd> toggle keep</span>
+    <span class="k keep"><kbd>enter</kbd> commit selection</span>
+    <span class="k keep"><kbd>1</kbd>-<kbd>${n}</kbd> keep just that one</span>
     <span class="k keep"><kbd>k</kbd> keep all</span>
     <span class="k trash"><kbd>d</kbd> dispose all</span>
     <span class="k"><kbd>s</kbd> skip</span>
     <span class="k"><kbd>backspace</kbd> undo</span>`;
+  document.querySelectorAll(".cell").forEach(cell => {
+    cell.addEventListener("click", () => toggleCell(parseInt(cell.dataset.k, 10)));
+  });
 }
 
 function preload() {
@@ -129,7 +140,24 @@ function preload() {
   }
 }
 
+let selected = new Set();
+
+function toggleCell(k) {
+  if (selected.has(k)) selected.delete(k); else selected.add(k);
+  const cells = document.querySelectorAll(".cell");
+  cells.forEach((c, j) => c.classList.toggle("sel", selected.has(j)));
+}
+
+function commitSelection() {
+  const it = items[i];
+  if (!isGroup(it) || selected.size === 0) return;
+  const keep = [...selected].sort((a, b) => a - b).map(k => it.members[k].asset_id);
+  const dispose = it.members.filter((_, k) => !selected.has(k)).map(m => m.asset_id);
+  sendGroup(it, keep, dispose, `kept ${keep.length}, disposed ${dispose.length}`);
+}
+
 async function sendGroup(it, keep, dispose, note) {
+  selected = new Set();
   startTime ??= Date.now(); sessionCount++;
   el("flash").textContent = note;
   keep.concat(dispose).forEach(a => labeled.add(a));
@@ -189,6 +217,9 @@ addEventListener("keydown", e => {
 
   if (isGroup(it)) {
     const n = it.members.length;
+    if (e.key === "Enter") { e.preventDefault(); commitSelection(); return; }
+    if (e.key === "Escape") { selected = new Set();
+      document.querySelectorAll(".cell.sel").forEach(c => c.classList.remove("sel")); return; }
     const k = parseInt(e.key, 10);
     if (k >= 1 && k <= 9 && k <= n) {
       e.preventDefault();
