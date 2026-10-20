@@ -81,7 +81,7 @@ def main() -> None:
 
     np.savez(MODEL, coef=lr.coef_[0], intercept=lr.intercept_[0], C=best_c, mu=mu, sd=sd)
     pl.DataFrame(
-        {"id": df["id"], "p_dispose": score, "labeled": np.isin(np.arange(len(df)), idx)}
+        {"id": df["id"], "score": score, "labeled": np.isin(np.arange(len(df)), idx)}
     ).write_parquet(SCORES)
     (DATA_DIR / "probe_report.json").write_text(
         json.dumps({"C": best_c, "knn_k": KNN_K, "cv": results, "n": int(len(y))}, indent=2)
@@ -89,7 +89,7 @@ def main() -> None:
 
     un = ~np.isin(np.arange(len(df)), idx)
     print(f"  unlabelled scored: {int(un.sum())}")
-    print(f"  score is a percentile blend of lr + knn, not a probability")
+    print("  score is a percentile blend of lr + knn, not a probability")
 
 
 if __name__ == "__main__":

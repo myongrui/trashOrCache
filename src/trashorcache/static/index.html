@@ -9,12 +9,20 @@
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
     font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow:hidden; }
   #wrap { display:flex; flex-direction:column; height:100vh; }
-  header { display:flex; gap:18px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line); }
+  header { display:flex; gap:14px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line); }
   header b { font-weight:600; }
   #bar { flex:1; height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
   #bar div { height:100%; width:0; background:var(--keep); transition:width .15s; }
-  #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; padding:10px; }
+  #kind { color:#d3a15f; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; padding:10px; overflow:auto; }
   #img { max-width:100%; max-height:100%; object-fit:contain; background:#000; }
+  #grid { display:grid; gap:8px; width:100%; align-content:start; }
+  .cell { position:relative; background:#000; border:2px solid #2a2e34; border-radius:4px; overflow:hidden; }
+  .cell.best { border-color:#2f6b4a; }
+  .cell img { width:100%; height:100%; object-fit:contain; display:block; }
+  .cell .n { position:absolute; top:4px; left:4px; background:#000a; color:#fff; padding:1px 6px; border-radius:3px; }
+  .cell .cap { position:absolute; bottom:0; left:0; right:0; background:#000b; color:#aeb4bd;
+    font-size:11px; padding:2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #meta { display:none; gap:14px; padding:6px 14px; color:var(--dim); border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; }
   #meta.on { display:flex; }
   footer { display:flex; gap:6px; padding:8px 12px; border-top:1px solid var(--line); flex-wrap:wrap; }
@@ -23,9 +31,7 @@
   .keep kbd { border-color:#2f6b4a; color:#7fd2a1; }
   .trash kbd { border-color:#6b3530; color:#e19b93; }
   #flash { position:fixed; right:14px; bottom:52px; color:var(--dim); }
-  #sugg { margin-left:auto; }
-  #sugg .d { color:#e19b93; } #sugg .k2 { color:#7fd2a1; }
-  #agree { color:var(--dim); }
+  #agree { color:var(--dim); margin-left:auto; }
   #agree .hit { color:#7fd2a1; } #agree .miss { color:#e19b93; }
 </style>
 </head>
@@ -34,14 +40,14 @@
   <header>
     <b id="pos">0 / 0</b>
     <div id="bar"><div></div></div>
+    <span id="kind"></span>
     <span id="eta"></span>
     <span id="counts"></span>
-    <span id="sugg"></span>
     <span id="agree"></span>
   </header>
   <div id="stage"><img id="img" alt=""></div>
   <div id="meta"></div>
-  <footer>
+  <footer id="foot">
     <span class="k keep"><kbd>1</kbd> keep</span>
     <span class="k trash"><kbd>2</kbd> dispose</span>
     <span class="k"><kbd>0</kbd> skip</span>
@@ -53,74 +59,93 @@
 <script>
 const el = id => document.getElementById(id);
 const PRELOAD = 30;
-
 let items = [], labeled = new Set(), i = 0, startTime = null, sessionCount = 0;
-let agree = 0, asked = 0;
+
+const isGroup = it => Array.isArray(it.members);
 
 async function boot() {
   const q = await fetch("/api/queue").then(x => x.json());
   items = q.items; labeled = new Set(q.labeled);
-  const first = items.findIndex(it => !labeled.has(it.asset_id));
+  const first = items.findIndex(it => isGroup(it)
+    ? !it.members.every(m => labeled.has(m.asset_id))
+    : !labeled.has(it.asset_id));
   i = first === -1 ? items.length : first;
   render(); preload();
 }
 
 function render() {
   if (i >= items.length) {
-    el("img").removeAttribute("src");
+    el("stage").innerHTML = "";
     el("pos").textContent = `${items.length} / ${items.length}  done`;
-    el("eta").textContent = "";
+    el("eta").textContent = ""; el("kind").textContent = "";
     return;
   }
   const it = items[i];
-  el("img").src = `/img/${it.asset_id}`;
   el("pos").textContent = `${i + 1} / ${items.length}`;
   el("bar").firstElementChild.style.width = `${100 * (i + 1) / items.length}%`;
-  el("sugg").innerHTML = it.suggest
-    ? `model: <b class="${it.suggest === "dispose" ? "d" : "k2"}">${it.suggest}</b> <span style="color:#7d828b">rank ${it.pct.toFixed(2)}</span>`
-    : "";
-  el("agree").innerHTML = asked
-    ? `<span class="hit">${agree}/${asked} hit</span> <span class="miss">${asked - agree} miss</span>`
-    : "";
-}
-
-async function refreshAgreement() {
-  const a = await fetch("/api/agreement").then(x => x.json()).catch(() => null);
-  if (!a || !a.n) return;
-  el("agree").innerHTML =
-    `<span class="hit">hit ${a.hit_pct}%</span> / <span class="miss">miss ${a.miss_pct}%</span> ` +
-    `<span style="color:#7d828b">(n=${a.n})</span>`;
-  el("agree").title =
-    `model said dispose: ${a.dispose_calls.hit_pct}% of ${a.dispose_calls.n} agreed\n` +
-    `model said keep: ${a.keep_calls.hit_pct}% of ${a.keep_calls.n} agreed`;
-  el("meta").innerHTML = [
-    it.file_name, it.source_app ?? "-", it.taken ?? "-",
-    `${it.width}x${it.height}`, `${(it.bytes / 1e6).toFixed(2)} MB`,
-    `ocr ${it.ocr_chars}`, `faces ${it.face_count}`, `c${it.cluster}`,
-  ].map(s => `<span>${s}</span>`).join("");
   if (startTime) {
     const rate = sessionCount / ((Date.now() - startTime) / 60000);
     el("eta").textContent = rate > 0.2 ? `${Math.ceil((items.length - i) / rate)} min left` : "";
   }
+  isGroup(it) ? renderGroup(it) : renderSingle(it);
+}
+
+function renderSingle(it) {
+  el("kind").textContent = it.suggest ? `model: ${it.suggest} ${it.pct.toFixed(2)}` : "";
+  el("stage").innerHTML = `<img id="img" alt="" src="/img/${it.asset_id}">`;
+  el("meta").innerHTML = [it.file_name, it.source_app ?? "-", it.taken ?? "-",
+    `${it.width}x${it.height}`, `${(it.bytes / 1e6).toFixed(2)} MB`].map(s => `<span>${s}</span>`).join("");
+  el("foot").innerHTML = `<span class="k keep"><kbd>1</kbd> keep</span>
+    <span class="k trash"><kbd>2</kbd> dispose</span><span class="k"><kbd>0</kbd> skip</span>
+    <span class="k"><kbd>backspace</kbd> undo</span><span class="k"><kbd>m</kbd> meta</span>`;
+}
+
+function renderGroup(it) {
+  const n = it.members.length;
+  const cols = n <= 4 ? n : Math.ceil(Math.sqrt(n * 1.6));
+  el("kind").textContent = `${it.kind} group · ${n} images`;
+  el("stage").innerHTML = `<div id="grid" style="grid-template-columns:repeat(${cols},1fr)">` +
+    it.members.map((m, k) => `<div class="cell ${k === 0 ? "best" : ""}">
+        <span class="n">${k + 1}</span>
+        <img src="/img/${m.asset_id}" alt="">
+        <span class="cap">${m.file_name} · ${m.width}x${m.height} · ${(m.bytes / 1e3).toFixed(0)}KB</span>
+      </div>`).join("") + `</div>`;
+  const cells = document.querySelectorAll(".cell img");
+  cells.forEach(im => { im.style.height = `${Math.max(120, Math.floor((el("stage").clientHeight - 40) / Math.ceil(n / cols)) - 8)}px`; });
+  el("meta").innerHTML = [`best guess: ${it.members[0].file_name}`, `saves ${n - 1} image(s)`]
+    .map(s => `<span>${s}</span>`).join("");
+  el("foot").innerHTML = `<span class="k keep"><kbd>1</kbd>-<kbd>${n}</kbd> keep that one, dispose rest</span>
+    <span class="k keep"><kbd>k</kbd> keep all</span>
+    <span class="k trash"><kbd>d</kbd> dispose all</span>
+    <span class="k"><kbd>s</kbd> skip</span>
+    <span class="k"><kbd>backspace</kbd> undo</span>`;
 }
 
 function preload() {
-  for (let k = i + 1; k <= Math.min(i + PRELOAD, items.length - 1); k++) {
-    const im = new Image(); im.src = `/img/${items[k].asset_id}`;
+  for (let k = i + 1; k <= Math.min(i + 8, items.length - 1); k++) {
+    const it = items[k];
+    const ids = isGroup(it) ? it.members.slice(0, 9).map(m => m.asset_id) : [it.asset_id];
+    ids.forEach(a => { const im = new Image(); im.src = `/img/${a}`; });
   }
 }
 
+async function sendGroup(it, keep, dispose, note) {
+  startTime ??= Date.now(); sessionCount++;
+  el("flash").textContent = note;
+  keep.concat(dispose).forEach(a => labeled.add(a));
+  i++; render(); preload();
+  const res = await fetch("/api/label_group", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ group_id: it.group_id, keep, dispose }),
+  }).catch(() => null);
+  if (!res || !res.ok) el("flash").textContent = "save failed -- check server";
+  refreshStats();
+}
+
 async function send(label) {
-  const it = items[i];
-  if (!it) return;
-  startTime ??= Date.now();
-  sessionCount++;
+  const it = items[i]; if (!it) return;
+  startTime ??= Date.now(); sessionCount++;
   el("flash").textContent = label;
-  if (it.suggest) {
-    asked++;
-    if (label === it.suggest) agree++;
-    el("flash").textContent = label === it.suggest ? `${label} agreed` : `${label} corrected (model said ${it.suggest})`;
-  }
   labeled.add(it.asset_id);
   i++; render(); preload();
   const res = await fetch("/api/label", {
@@ -132,26 +157,52 @@ async function send(label) {
 }
 
 async function undo() {
-  if (i === 0) return;
   const r = await fetch("/api/undo", { method: "POST" });
   if (!r.ok) return;
-  const { dropped } = await r.json();
-  labeled.delete(dropped.asset_id);
-  i = Math.max(0, items.findIndex(x => x.asset_id === dropped.asset_id));
-  el("flash").textContent = `undone ${dropped.label}`;
+  const d = await r.json();
+  const dropped = d.dropped;
+  const target = dropped.group_id
+    ? items.findIndex(x => x.group_id === dropped.group_id)
+    : items.findIndex(x => x.asset_id === dropped.asset_id);
+  if (target >= 0) i = target;
+  if (dropped.group_id) {
+    const it = items[target];
+    it.members.forEach(m => labeled.delete(m.asset_id));
+  } else labeled.delete(dropped.asset_id);
+  el("flash").textContent = `undone ${d.rows} row(s)`;
   render(); refreshStats();
 }
 
 async function refreshStats() {
   const s = await fetch("/api/stats").then(x => x.json());
   el("counts").textContent = Object.entries(s.counts).map(([k, v]) => `${k} ${v}`).join("  ");
-  refreshAgreement();
+  const a = await fetch("/api/agreement").then(x => x.json()).catch(() => null);
+  el("agree").innerHTML = a && a.n
+    ? `<span class="hit">hit ${a.hit_pct}%</span> / <span class="miss">miss ${a.miss_pct}%</span> (n=${a.n})` : "";
 }
 
 addEventListener("keydown", e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "Backspace") { e.preventDefault(); undo(); return; }
   if (e.key === "m") { el("meta").classList.toggle("on"); return; }
+  const it = items[i]; if (!it) return;
+
+  if (isGroup(it)) {
+    const n = it.members.length;
+    const k = parseInt(e.key, 10);
+    if (k >= 1 && k <= 9 && k <= n) {
+      e.preventDefault();
+      const keep = [it.members[k - 1].asset_id];
+      const rest = it.members.filter((_, j) => j !== k - 1).map(m => m.asset_id);
+      sendGroup(it, keep, rest, `kept #${k}, disposed ${rest.length}`);
+      return;
+    }
+    if (e.key === "k") { e.preventDefault(); sendGroup(it, it.members.map(m => m.asset_id), [], "kept all"); return; }
+    if (e.key === "d") { e.preventDefault(); sendGroup(it, [], it.members.map(m => m.asset_id), "disposed all"); return; }
+    if (e.key === "s") { e.preventDefault(); sendGroup(it, [], [], "skipped"); }
+    return;
+  }
+
   if (e.key === "1") { e.preventDefault(); send("keep"); return; }
   if (e.key === "2") { e.preventDefault(); send("dispose"); return; }
   if (e.key === "0") { e.preventDefault(); send("skip"); }

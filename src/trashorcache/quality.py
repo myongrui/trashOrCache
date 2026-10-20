@@ -18,6 +18,7 @@ FIELDS = [
     "luma_mean", "luma_std", "noise", "colorfulness", "entropy", "flat_bright",
     "face_area_max", "face_area_sum", "big_faces",
 ]
+HASH_FIELDS = ["dhash", "phash", "hash_w", "hash_h"]
 
 FACE_SQL = """
 SELECT a.id AS id,
@@ -34,6 +35,32 @@ def laplacian(g: np.ndarray) -> np.ndarray:
     return 4 * p[1:-1, 1:-1] - p[:-2, 1:-1] - p[2:, 1:-1] - p[1:-1, :-2] - p[1:-1, 2:]
 
 
+def bits_to_int(bits: np.ndarray) -> int:
+    v = 0
+    for b in bits.ravel():
+        v = (v << 1) | int(b)
+    return v
+
+
+def signature(im: Image.Image) -> np.ndarray:
+    a = np.asarray(im.convert("L").resize((32, 32), Image.BILINEAR), dtype=np.float32)
+    a = a - a.mean()
+    n = np.linalg.norm(a)
+    return (a / (n if n else 1.0)).ravel()
+
+
+def hashes(im: Image.Image) -> tuple[int, int, int, int]:
+    small = im.convert("L")
+    w, h = small.size
+    dh = np.asarray(small.resize((9, 8), Image.BILINEAR), dtype=np.int16)
+    dhash = bits_to_int(dh[:, 1:] > dh[:, :-1])
+    from scipy.fft import dct
+    a = np.asarray(small.resize((32, 32), Image.BILINEAR), dtype=np.float32)
+    low = dct(dct(a, axis=0, norm="ortho"), axis=1, norm="ortho")[:8, :8]
+    phash = bits_to_int(low > np.median(low[1:]))
+    return dhash, phash, w, h
+
+
 def features(path: str) -> tuple | None:
     try:
         with Image.open(path) as im:
@@ -44,6 +71,7 @@ def features(path: str) -> tuple | None:
                 s = SIZE / max(w, h)
                 im = im.resize((max(1, int(w * s)), max(1, int(h * s))), Image.BILINEAR)
             a = np.asarray(im, dtype=np.float32)
+            hsh = hashes(im)
     except Exception:
         return None
 
@@ -82,7 +110,7 @@ def features(path: str) -> tuple | None:
         colour,
         float(-(p * np.log2(p)).sum()),
         float((g >= 245).mean()),
-    )
+    ), hashes(im), signature(im)
 
 
 def face_features() -> pl.DataFrame:
@@ -123,16 +151,23 @@ def main() -> None:
 
     ok = [r for r in rows if r is not None]
     print(f"  ok {len(ok)}   failed {len(rows) - len(ok)}")
-    px = pl.DataFrame(np.array(ok, dtype=np.float32), schema=FIELDS[:11], orient="row")
-    px = px.with_columns(
+    px = pl.DataFrame(np.array([r[0] for r in ok], dtype=np.float32), schema=FIELDS[:11], orient="row")
+    hx = pl.DataFrame(
+        np.array([r[1] for r in ok], dtype=np.uint64), schema=HASH_FIELDS, orient="row"
+    )
+    px = px.hstack(hx).with_columns(
         pl.Series("id", [i for i, r in zip(ids, rows) if r is not None])
     )
+    sig = np.stack([r[2] for r in ok]).astype(np.float16)
+    np.save(DATA_DIR / "signatures.npy", sig)
+    print(f"  signatures {sig.shape} -> signatures.npy")
 
     q = (
         pl.DataFrame({"id": df["id"]})
         .join(px, on="id", how="left")
         .join(face_features(), on="id", how="left")
         .with_columns(pl.col("face_area_max", "face_area_sum", "big_faces").fill_null(0.0))
+
     )
     q.write_parquet(DATA_DIR / "quality.parquet", compression="zstd")
 

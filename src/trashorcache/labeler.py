@@ -35,6 +35,12 @@ class Label(BaseModel):
     asset_id: str
     label: str
 
+
+class GroupDecision(BaseModel):
+    group_id: str
+    keep: list[str]
+    dispose: list[str]
+
 def read_labels() -> list[dict]:
     if not LABELS.exists():
         return []
@@ -86,6 +92,20 @@ def add(body: Label) -> JSONResponse:
     return JSONResponse({"ok": True, **row})
 
 
+@app.post("/api/label_group")
+def label_group(body: GroupDecision) -> JSONResponse:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows = [{"asset_id": a, "label": "keep", "group_id": body.group_id, "at": now} for a in body.keep]
+    rows += [{"asset_id": a, "label": "dispose", "group_id": body.group_id, "at": now} for a in body.dispose]
+    if rows:
+        with LABELS.open("a") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    return JSONResponse({"ok": True, "rows": len(rows)})
+
+
 @app.get("/api/agreement")
 def agreement() -> JSONResponse:
     lab = {r["asset_id"]: r["label"] for r in read_labels()}
@@ -120,7 +140,10 @@ def undo() -> JSONResponse:
     rows = read_labels()
     if not rows:
         raise HTTPException(400, "nothing to undo")
-    dropped = rows.pop()
+    last = rows.pop()
+    dropped = [last]
+    while rows and last.get("group_id") and rows[-1].get("group_id") == last["group_id"]:
+        dropped.append(rows.pop())
     shutil.copy2(LABELS, LABELS.with_suffix(".jsonl.bak"))
     tmp = LABELS.with_suffix(".jsonl.tmp")
     with tmp.open("w") as fh:
@@ -128,7 +151,7 @@ def undo() -> JSONResponse:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, LABELS)
-    return JSONResponse({"ok": True, "dropped": dropped})
+    return JSONResponse({"ok": True, "dropped": dropped[0], "rows": len(dropped)})
 
 
 def main() -> None:

@@ -68,6 +68,14 @@ def groups_near_dup(X: np.ndarray, thresh: float = 0.95) -> np.ndarray:
     return np.array([find(i) for i in range(n)])
 
 
+def unique_labels() -> list[dict]:
+    """Last write wins: a later group decision overrides an earlier single-image label."""
+    latest = {}
+    for r in read_labels():
+        latest[r["asset_id"]] = r
+    return list(latest.values())
+
+
 def kmeans(X: np.ndarray, k: int, iters: int = 25, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     C = X[rng.choice(len(X), k, replace=False)].copy()

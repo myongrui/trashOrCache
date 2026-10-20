@@ -88,7 +88,7 @@ def model_queue(df, X, n, done, hard, random_only=False) -> list[tuple[int, floa
         raise SystemExit("scores.parquet is stale relative to the manifest - re-run probe")
 
     ids = df["id"].to_list()
-    p = scores["p_dispose"].to_numpy()
+    p = scores["score"].to_numpy()
     keep_mask = np.array([a not in done and np.isfinite(p[i]) for i, a in enumerate(ids)])
     if hard:
         keep_mask &= df["ocr_chars"].to_numpy() == 0
@@ -146,7 +146,9 @@ def to_items(df, idx, pct=None, assign=None, stratum=None) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["coverage", "model", "eval", "agree"], default="coverage")
+    ap.add_argument("--mode", choices=["coverage", "model", "eval", "agree", "dupes", "validate"], default="coverage")
+    ap.add_argument("--band", choices=["auto_dispose", "review"], default="auto_dispose")
+    ap.add_argument("--source", choices=["dupes", "variants"], default="dupes")
     ap.add_argument("--out", default=str(QUEUE))
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--clusters", type=int, default=150)
@@ -157,6 +159,44 @@ def main() -> None:
     df, X = load_aligned()
     done = labelled_ids()
     assign = clusters(X, args.clusters, args.seed)
+
+    if args.mode == "validate":
+        sc = pl.read_parquet(SCORES)
+        ids = df["id"].to_list()
+        want = np.array([a == args.band for a in sc["action"].to_list()])
+        labelled = sc["labeled"].to_numpy()
+        pool = np.flatnonzero(want & ~labelled & np.array([a not in done for a in ids]))
+        pick = np.random.default_rng().choice(pool, size=min(args.n, pool.size), replace=False)
+        items = to_items(df, [int(i) for i in pick], None, assign)
+        for it in items:
+            it["suggest"] = "dispose" if args.band == "auto_dispose" else "keep"
+            it["pct"] = 0.0
+            it["stratum"] = args.band
+        Path(args.out).write_text(json.dumps(items, indent=1) + "\n")
+        print(f"validate queue: {len(items)} random images from the '{args.band}' band -> {args.out}")
+        print(f"  label them normally; /api/agreement hit rate = measured precision of the band")
+        return
+
+    if args.mode == "dupes":
+        src = DATA_DIR / ("groups.json" if args.source == "dupes" else "clusters.json")
+        groups = json.loads(src.read_text())
+        todo = []
+        for g in groups:
+            fresh = [m for m in g["members"] if m["asset_id"] not in done]
+            if len(fresh) < 2:
+                continue
+            settled_keep = [m for m in g["members"] if m["asset_id"] in done]
+            g = dict(g)
+            g["members"] = fresh + settled_keep
+            todo.append(g)
+        items = todo[: args.n]
+        Path(args.out).write_text(json.dumps(items, indent=1) + "\n")
+        n_img = sum(len(g["members"]) for g in items)
+        print(f"dupes queue: {len(items)} groups, {n_img} images -> {args.out}")
+        print(f"  {sum(1 for g in items if g['kind'] == 'duplicate')} duplicate groups, "
+              f"{sum(1 for g in items if g['kind'] == 'similar')} similar groups")
+        print(f"  up to {n_img - len(items)} avoidable images")
+        return
 
     if args.mode == "agree":
         seen = sorted(done)
