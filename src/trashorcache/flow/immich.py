@@ -11,6 +11,13 @@ import polars as pl
 from ..contract.paths import SCORES
 from .config import KEY, URL
 
+TAG_NAMES = {
+    "auto_dispose": "Dispose",
+    "redundant": "Dispose",
+    "review": "Review",
+    "keep": "Keep",
+}
+
 
 def call(method: str, path: str, body: dict | None = None) -> dict:
     if not KEY:
@@ -51,10 +58,10 @@ def main() -> None:
     ap.add_argument("--skip-labeled", action="store_true", default=True)
     args = ap.parse_args()
 
-    args.tag = args.tag or f"toc:{args.band}"
+    args.tag = args.tag or TAG_NAMES[args.band]
     sc = pl.read_parquet(SCORES)
     if "action" not in sc.columns:
-        raise SystemExit("scores.parquet has no action column - run confidence.py first")
+        raise SystemExit("scores.parquet has no action column - run toc-classifier run first")
     sel = sc.filter((pl.col("action") == args.band) & ~pl.col("labeled"))
     ids = sel["id"].to_list()
     if args.limit:
