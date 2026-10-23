@@ -58,9 +58,9 @@ def main() -> None:
     from .feedback import ingest
 
     fb = ingest()
-    if fb["added"] or fb["inattention"]:
+    if fb["added"]:
         print(f"feedback: +{fb['added']} labels, {fb['skipped']} already known, "
-              f"{fb['inattention']} left in Review (inattention)")
+              f"{fb['pruned']} ledger rows pruned, {fb['pending']} still pending")
 
     df, X = load_aligned()
     pos = {a: i for i, a in enumerate(df["id"].to_list())}

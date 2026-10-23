@@ -51,6 +51,12 @@ def add_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
     return len(ids)
 
 
+def remove_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
+    for i in range(0, len(ids), chunk):
+        call("DELETE", f"/api/tags/{tag_id}/assets", {"ids": ids[i : i + chunk]})
+    return len(ids)
+
+
 def get_asset(asset_id: str) -> dict | None:
     """None when the row is gone (trashed assets are purged after the retention window)."""
     if not KEY:

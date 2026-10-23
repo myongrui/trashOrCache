@@ -17,5 +17,4 @@ LABELS = Path(os.environ.get("TOC_LABELS", DATA_DIR / "labels.jsonl"))
 QUEUE = Path(os.environ.get("TOC_QUEUE", DATA_DIR / "queue.json"))
 
 DECISIONS = DATA_DIR / "decisions.jsonl"
-PROPOSALS = DATA_DIR / "proposals.jsonl"
-FEEDBACK = DATA_DIR / "feedback.jsonl"
+LEDGER = DATA_DIR / "ledger.db"

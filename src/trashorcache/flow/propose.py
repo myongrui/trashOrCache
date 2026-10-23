@@ -6,7 +6,8 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from ..contract.paths import DECISIONS, LABELS, PROPOSALS
+from ..contract import ledger
+from ..contract.paths import DECISIONS, LABELS
 from .immich import ACTION_TAGS, add_assets, ensure_tag
 
 CHUNK = 500
@@ -34,7 +35,8 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true", help="actually write tags to Immich")
     args = ap.parse_args()
 
-    skip = settled_ids()
+    con = ledger.connect()
+    skip = settled_ids() | ledger.pending_ids(con)
     rows = [d for d in load_decisions() if d["asset_id"] not in skip]
     if args.limit:
         rows = rows[: args.limit]
@@ -43,7 +45,9 @@ def main() -> None:
     for d in rows:
         by_tag.setdefault(ACTION_TAGS[d["action"]], []).append(d)
 
-    print(f"{len(rows)} assets to propose ({len(skip)} labelled assets excluded)")
+    c = ledger.counts(con)
+    print(f"{len(rows)} assets to propose "
+          f"({len(skip)} skipped: {c['pending']} already pending, rest labelled)")
     for tag, items in sorted(by_tag.items()):
         print(f"  {tag:8s} {len(items):5d}")
     calls = sum((len(v) + args.chunk - 1) // args.chunk for v in by_tag.values())
@@ -57,28 +61,23 @@ def main() -> None:
 
     batch = datetime.now(timezone.utc).isoformat(timespec="seconds")
     written = 0
-    with PROPOSALS.open("a") as log:
-        for tag, items in sorted(by_tag.items()):
-            tag_obj = ensure_tag(tag)
-            print(f"\n{tag}: tag id {tag_obj['id'][:8]}")
-            for start in range(0, len(items), args.chunk):
-                chunk = items[start : start + args.chunk]
-                ids = [d["asset_id"] for d in chunk]
-                add_assets(tag_obj["id"], ids)
-                for d in chunk:
-                    log.write(json.dumps({
-                        "asset_id": d["asset_id"],
-                        "action": d["action"],
-                        "tag": tag,
-                        "tag_id": tag_obj["id"],
-                        "group_id": d.get("group_id"),
-                        "batch_id": batch,
-                        "proposed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "observed_at": None,
-                        "outcome": None,
-                    }) + "\n")
-                log.flush()
-                written += len(chunk)
-                print(f"  {written}/{len(rows)} tagged", flush=True)
+    for tag, items in sorted(by_tag.items()):
+        tag_obj = ensure_tag(tag)
+        print(f"\n{tag}: tag id {tag_obj['id'][:8]}")
+        for start in range(0, len(items), args.chunk):
+            chunk = items[start : start + args.chunk]
+            ids = [d["asset_id"] for d in chunk]
+            add_assets(tag_obj["id"], ids)
+            ledger.upsert(con, [{
+                "asset_id": d["asset_id"],
+                "batch_id": batch,
+                "action": d["action"],
+                "tag": tag,
+                "tag_id": tag_obj["id"],
+                "group_id": d.get("group_id"),
+                "proposed_at": ledger.now(),
+            } for d in chunk])
+            written += len(chunk)
+            print(f"  {written}/{len(rows)} tagged", flush=True)
 
-    print(f"\ntagged {written} assets; proposals appended to {PROPOSALS.name}")
+    print(f"\ntagged {written} assets; ledger {ledger.counts(con)}")
