@@ -4,7 +4,8 @@ import importlib
 import sys
 
 COMMANDS = {
-    "tag": ("immich", "create / assign tags in Immich (dry-run unless --apply)"),
+    "propose": ("propose", "apply decisions.jsonl to Immich tags"),
+    "tag": ("immich", "tag a raw band directly (debugging)"),
 }
 
 

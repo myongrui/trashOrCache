@@ -18,6 +18,8 @@ TAG_NAMES = {
     "keep": "Keep",
 }
 
+ACTION_TAGS = {"dispose": "Dispose", "review": "Review", "keep": "Keep"}
+
 
 def call(method: str, path: str, body: dict | None = None) -> dict:
     if not KEY:
