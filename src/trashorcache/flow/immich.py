@@ -51,6 +51,23 @@ def add_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
     return len(ids)
 
 
+def get_asset(asset_id: str) -> dict | None:
+    """None when the row is gone (trashed assets are purged after the retention window)."""
+    if not KEY:
+        raise SystemExit("IMMICH_API_KEY is not set")
+    req = urllib.request.Request(
+        f"{URL.rstrip('/')}/api/assets/{asset_id}",
+        headers={"x-api-key": KEY, "accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 404):
+            return None
+        raise SystemExit(f"GET /api/assets/{asset_id} -> {e.code}: {e.read().decode()[:200]}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--band", choices=["auto_dispose", "redundant", "review"], default="auto_dispose")

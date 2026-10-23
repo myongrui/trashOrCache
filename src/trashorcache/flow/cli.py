@@ -5,6 +5,7 @@ import sys
 
 COMMANDS = {
     "propose": ("propose", "apply decisions.jsonl to Immich tags"),
+    "observe": ("observe", "read Immich, record what was decided"),
     "tag": ("immich", "tag a raw band directly (debugging)"),
 }
 

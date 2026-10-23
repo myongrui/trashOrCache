@@ -55,6 +55,13 @@ def main() -> None:
     ap.add_argument("--csv", default=None, help="also write dispose candidates to this CSV")
     args = ap.parse_args()
 
+    from .feedback import ingest
+
+    fb = ingest()
+    if fb["added"] or fb["inattention"]:
+        print(f"feedback: +{fb['added']} labels, {fb['skipped']} already known, "
+              f"{fb['inattention']} left in Review (inattention)")
+
     df, X = load_aligned()
     pos = {a: i for i, a in enumerate(df["id"].to_list())}
     rows = [r for r in unique_labels() if r["label"] in ("keep", "dispose") and r["asset_id"] in pos]
