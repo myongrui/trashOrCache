@@ -44,7 +44,7 @@ def add_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--band", choices=["auto_dispose", "redundant", "upgrade", "review"], default="auto_dispose")
+    ap.add_argument("--band", choices=["auto_dispose", "redundant", "review"], default="auto_dispose")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--apply", action="store_true", help="actually write the tag to Immich")

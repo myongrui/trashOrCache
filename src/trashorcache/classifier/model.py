@@ -105,7 +105,6 @@ def main() -> None:
     action = np.where(redundant | upgrade, action, action)
     action = np.where((action == "review") & redundant, "redundant", action)
     action = np.where((action == "review") & upgrade, "upgrade", action)
-
     pl.DataFrame({
         "id": df["id"], "score": (raw / raw.max()).astype(np.float32),
         "action": action, "labeled": labeled,
@@ -132,7 +131,15 @@ def main() -> None:
         {"target_precision": args.target_precision, "C": args.C, "band": chosen,
          "threshold": thr, "counts": {n: int((action == n).sum()) for n in set(action)}}, indent=2))
     print("\n  NOTE: this precision is measured on actively-sampled labels. Validate the band")
-    print("  with `toc queue --mode validate --band auto_dispose` before tagging anything.")
+    print("  with `toc-classifier queue --mode validate --band auto_dispose` before tagging anything.")
+
+    from .decisions import write as write_decisions
+
+    summary = write_decisions(df)
+    print(f"\n  decisions.jsonl: {summary['rows']} rows  {summary['actions']}")
+    print(f"    groups: {summary['dispose_all']} dispose_all, {summary['keep_one']} keep_one, "
+          f"{summary['groups_skipped']} already decided")
+    print(f"    why: {summary['whys']}")
 
 
 if __name__ == "__main__":
