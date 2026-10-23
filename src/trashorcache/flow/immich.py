@@ -57,6 +57,28 @@ def remove_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
     return len(ids)
 
 
+def create_stack(asset_ids: list[str]) -> dict:
+    """The first asset in the array becomes the stack's primary."""
+    return call("POST", "/api/stacks", {"assetIds": asset_ids})
+
+
+def set_stack_primary(stack_id: str, asset_id: str) -> dict:
+    return call("PUT", f"/api/stacks/{stack_id}", {"primaryAssetId": asset_id})
+
+
+def ensure_album(name: str) -> dict:
+    for a in call("GET", "/api/albums"):
+        if a["albumName"] == name:
+            return a
+    return call("POST", "/api/albums", {"albumName": name})
+
+
+def add_album_assets(album_id: str, ids: list[str], chunk: int = 500) -> int:
+    for i in range(0, len(ids), chunk):
+        call("PUT", f"/api/albums/{album_id}/assets", {"ids": ids[i : i + chunk]})
+    return len(ids)
+
+
 def get_asset(asset_id: str) -> dict | None:
     """None when the row is gone (trashed assets are purged after the retention window)."""
     if not KEY:

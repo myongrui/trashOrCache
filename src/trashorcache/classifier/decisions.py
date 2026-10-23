@@ -40,7 +40,7 @@ def build(df: pl.DataFrame) -> tuple[list[Decision], dict]:
     if len(band) != df.height:
         raise SystemExit("scores.parquet is stale relative to the manifest - run `toc-classifier run`")
 
-    labelled = {r["asset_id"]: r["label"] for r in unique_labels()}
+    labelled = {r["asset_id"]: r["label"] for r in unique_labels() if not r.get("recheck")}
     app = df["source_app"].to_list()
     ocr = df["ocr_chars"].to_list()
 

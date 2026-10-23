@@ -33,19 +33,27 @@ def _verify(rows: list[dict], keep_tag_id: str) -> list[str]:
 def main() -> None:
     ap = argparse.ArgumentParser(prog="toc-flow observe")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--since", default=None, help="only judge assets captured on/after YYYY-MM-DD")
     ap.add_argument("--apply", action="store_true", help="move tags and record the decision")
     args = ap.parse_args()
 
     con = db.connect()
+    where = "proposed_at IS NOT NULL AND (decision IS NULL OR recheck = 1)"
+    params: tuple = ()
+    if args.since:
+        where += " AND substr(file_created_at, 1, 10) >= ?"
+        params = (args.since,)
     pending = [dict(r) for r in con.execute(
-        "SELECT asset_id, tag, tag_id, batch_id FROM assets "
-        "WHERE decision IS NULL AND proposed_at IS NOT NULL ORDER BY proposed_at, asset_id")]
+        f"SELECT asset_id, tag, tag_id, batch_id FROM assets WHERE {where} "
+        "ORDER BY proposed_at, asset_id", params)]
     if args.limit:
         pending = pending[: args.limit]
     if not pending:
         print(f"nothing to observe ({db.counts(con)})")
         return
 
+    if args.since:
+        print(f"only assets captured on/after {args.since}")
     print(f"observing {len(pending)} pending proposals from "
           f"{len({r['batch_id'] for r in pending})} batch(es)")
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -77,6 +85,9 @@ def main() -> None:
             print(f"  {len(ids):5d} out of {tag}")
         add_assets(keep_tag["id"], [r["asset_id"] for r in keeps])
         print(f"  {len(keeps):5d} into Keep")
+        con.executemany("UPDATE assets SET tag='Keep', tag_id=? WHERE asset_id=?",
+                        [(keep_tag["id"], r["asset_id"]) for r in keeps])
+        con.commit()
 
         # Immich's bulk tag calls fail silently for individual assets under
         # remove-then-add, so trust the read-back rather than the 2xx.
@@ -96,8 +107,8 @@ def main() -> None:
     decided.update({r["asset_id"]: "keep" for r in keeps})
     at = db.now()
     con.executemany(
-        "UPDATE assets SET decision=?, decision_source='observe', decided_at=? "
-        "WHERE asset_id=? AND decision IS NULL",
+        "UPDATE assets SET decision=?, decision_source='observe', decided_at=?, recheck=0 "
+        "WHERE asset_id=? AND (decision IS NULL OR recheck = 1)",
         [(o, at, a) for a, o in decided.items()])
     con.commit()
     print(f"\ndb: {db.counts(con)}")

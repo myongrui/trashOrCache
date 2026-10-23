@@ -64,9 +64,9 @@ def signatures(df: pl.DataFrame) -> np.ndarray:
 
 def read_labels() -> list[dict]:
     con = db.connect()
-    return [{"asset_id": r[0], "label": r[1], "source": r[2], "at": r[3]}
+    return [{"asset_id": r[0], "label": r[1], "source": r[2], "at": r[3], "recheck": r[4]}
             for r in con.execute(
-                "SELECT asset_id, decision, decision_source, decided_at "
+                "SELECT asset_id, decision, decision_source, decided_at, recheck "
                 "FROM assets WHERE decision IS NOT NULL ORDER BY decided_at")]
 
 

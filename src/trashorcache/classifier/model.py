@@ -60,6 +60,12 @@ def main() -> None:
     rows = [r for r in unique_labels() if r["label"] in ("keep", "dispose") and r["asset_id"] in pos]
     idx = np.array([pos[r["asset_id"]] for r in rows])
     y = np.array([r["label"] == "dispose" for r in rows], dtype=np.int64)
+    if len(y) < 50 or len(set(y.tolist())) < 2:
+        raise SystemExit(
+            f"only {len(y)} labels - need at least 50 of both kinds to fit.\n"
+            "  bootstrap:  toc-classifier queue --mode coverage --n 400\n"
+            "              toc-classifier review\n"
+            "  or restore: toc-classifier restore --from data/labels.labeler.jsonl")
     print(f"{len(y)} unique labels   dispose {y.mean():.1%}")
 
     q_sharp = df["sharpness_center"].fill_null(0.0).to_numpy()

@@ -10,12 +10,14 @@ COMMANDS = {
     "dupes": ("group", "near-identical groups (corr >= 0.98)"),
     "variants": ("group", "same-day variant groups (corr >= 0.92)"),
     "run": ("model", "fit the filter, write scores + action bands"),
+    "bootstrap": ("bootstrap", "cold start: rules -> decisions.jsonl, no model"),
     "review": ("review.server", "serve the labeler UI"),
     "queue": ("review.queue", "build a review queue"),
     "bench": ("evaluate.bench", "method comparison harness"),
     "agree": ("evaluate.agree", "label self-agreement (kappa)"),
     "export": ("export", "write labels (and optionally vectors) out as files"),
     "migrate": ("migrate", "import legacy parquet/npy/jsonl into toc.db"),
+    "restore": ("restore", "restore decisions from a labels jsonl export"),
 }
 
 KINDS = {"dupes": "dupes", "variants": "variants"}

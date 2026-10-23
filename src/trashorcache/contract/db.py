@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS features (
   big_faces         REAL
 );
 
+CREATE TABLE IF NOT EXISTS groups (
+  group_id     TEXT PRIMARY KEY,
+  stack_id     TEXT,
+  keeper_asset_id TEXT,
+  created_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS assets_pending ON assets(proposed_at) WHERE decision IS NULL;
 CREATE INDEX IF NOT EXISTS assets_decided ON assets(decided_at) WHERE decision IS NOT NULL;
 CREATE INDEX IF NOT EXISTS assets_purged  ON assets(purged_at) WHERE purged_at IS NOT NULL;
@@ -100,7 +112,24 @@ def connect(path=None) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(assets)")}
+    if "apply_state" not in cols:
+        con.execute("ALTER TABLE assets ADD COLUMN apply_state TEXT")
+    if "recheck" not in cols:
+        con.execute("ALTER TABLE assets ADD COLUMN recheck INTEGER NOT NULL DEFAULT 0")
+    con.commit()
     return con
+
+
+def get_meta(con: sqlite3.Connection, key: str) -> str | None:
+    row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:
+    con.execute("INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value))
+    con.commit()
 
 
 def counts(con: sqlite3.Connection) -> dict[str, int]:

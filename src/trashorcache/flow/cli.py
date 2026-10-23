@@ -6,6 +6,8 @@ import sys
 COMMANDS = {
     "propose": ("propose", "apply decisions.jsonl to Immich tags"),
     "observe": ("observe", "read Immich, record what was decided"),
+    "seed": ("seed", "backfill tags for decisions made before tagging existed"),
+    "reset": ("reset", "untag unsorted assets and clear their proposal"),
     "tag": ("immich", "tag a raw band directly (debugging)"),
 }
 
