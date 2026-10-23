@@ -8,10 +8,8 @@ import urllib.request
 
 import polars as pl
 
-from .store import DATA_DIR, SCORES
-
-URL = os.environ.get("IMMICH_URL", "http://127.0.0.1:2283")
-KEY = os.environ.get("IMMICH_API_KEY", "")
+from ..contract.paths import SCORES
+from .config import KEY, URL
 
 
 def call(method: str, path: str, body: dict | None = None) -> dict:
@@ -46,13 +44,14 @@ def add_assets(tag_id: str, ids: list[str], chunk: int = 500) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--band", choices=["auto_dispose", "review"], default="auto_dispose")
-    ap.add_argument("--tag", default="toc:auto-dispose")
+    ap.add_argument("--band", choices=["auto_dispose", "redundant", "upgrade", "review"], default="auto_dispose")
+    ap.add_argument("--tag", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--apply", action="store_true", help="actually write the tag to Immich")
     ap.add_argument("--skip-labeled", action="store_true", default=True)
     args = ap.parse_args()
 
+    args.tag = args.tag or f"toc:{args.band}"
     sc = pl.read_parquet(SCORES)
     if "action" not in sc.columns:
         raise SystemExit("scores.parquet has no action column - run confidence.py first")

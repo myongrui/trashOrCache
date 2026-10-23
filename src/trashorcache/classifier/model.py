@@ -51,6 +51,8 @@ def main() -> None:
     ap.add_argument("--target-precision", type=float, default=0.95)
     ap.add_argument("--min-n", type=int, default=80)
     ap.add_argument("--C", type=float, default=0.1)
+    ap.add_argument("--redundant-cos", type=float, default=0.95)
+    ap.add_argument("--csv", default=None, help="also write dispose candidates to this CSV")
     args = ap.parse_args()
 
     df, X = load_aligned()
@@ -60,6 +62,9 @@ def main() -> None:
     y = np.array([r["label"] == "dispose" for r in rows], dtype=np.int64)
     print(f"{len(y)} unique labels   dispose {y.mean():.1%}")
 
+    q_quality = pl.read_parquet(DATA_DIR / "quality.parquet")
+    q_sharp = q_quality["sharpness_center"].to_numpy()
+    q_face = q_quality["face_area_max"].fill_null(0).to_numpy()
     T, mu, sd = standardize(tabular_raw(df))
     Q = standardize(quality_raw(df))[0]
     F = np.c_[X, T, Q]
@@ -85,13 +90,29 @@ def main() -> None:
     labeled = np.isin(np.arange(len(df)), idx)
     action = np.where(labeled, "labeled", np.where(raw >= thr, "auto_dispose", "review"))
 
+    # relational pass: "I already have this picture" is not a property of one image
+    sharp = q_sharp
+    face = q_face
+    pix = (df["width"].fill_null(0) * df["height"].fill_null(0)).to_numpy()
+    quality = np.log1p(pix) + sharp * 0.15 + face * 2.0
+    kept_idx = idx[y == 0]
+    sim_to_kept = X @ X[kept_idx].T
+    nearest = sim_to_kept.argmax(1)
+    best_sim = sim_to_kept[np.arange(len(df)), nearest]
+    nearest_kept = kept_idx[nearest]
+    redundant = (~labeled) & (best_sim >= args.redundant_cos) & (quality <= quality[nearest_kept])
+    upgrade = (~labeled) & (best_sim >= args.redundant_cos) & (quality > quality[nearest_kept])
+    action = np.where(redundant | upgrade, action, action)
+    action = np.where((action == "review") & redundant, "redundant", action)
+    action = np.where((action == "review") & upgrade, "upgrade", action)
+
     pl.DataFrame({
         "id": df["id"], "score": (raw / raw.max()).astype(np.float32),
         "action": action, "labeled": labeled,
     }).write_parquet(SCORES)
 
     print(f"\n  target precision {args.target_precision:.0%} -> cutoff at top {100*(1-chosen['quantile']):.0f}%")
-    for name in ("auto_dispose", "review", "labeled"):
+    for name in ("auto_dispose", "redundant", "upgrade", "review", "labeled"):
         print(f"    {name:14s} {int((action == name).sum()):6d}")
 
     sel = df.filter(pl.Series(action == "auto_dispose"))
@@ -99,6 +120,13 @@ def main() -> None:
     print(f"    whatsapp filename {int((sel['source_app'] == 'whatsapp').fill_null(False).sum())}")
     print(f"    has OCR text      {int((sel['ocr_chars'] > 0).sum())}")
     print(f"    camera or GPS     {int((sel['make'].is_not_null() | sel['latitude'].is_not_null()).sum())}")
+
+    if args.csv:
+        df2 = df.with_columns(pl.Series("action", action)).filter(pl.col("action") == "auto_dispose")
+        cols = ["id", "originalFileName", "file_created_at", "width", "height", "file_size",
+                "source_app", "ocr_chars", "original_path_host"]
+        df2.select(cols).rename({"id": "asset_id", "originalFileName": "file_name"}).write_csv(args.csv)
+        print(f"  csv: {df2.height} rows -> {args.csv}")
 
     (DATA_DIR / "confidence_report.json").write_text(json.dumps(
         {"target_precision": args.target_precision, "C": args.C, "band": chosen,

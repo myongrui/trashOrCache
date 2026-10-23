@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from .config import DATA_DIR
-from .store import LABELS, SCORES, clusters, load_aligned
+from ..config import DATA_DIR
+from ..store import LABELS, SCORES, clusters, load_aligned
 
 QUEUE = DATA_DIR / "queue.json"
 

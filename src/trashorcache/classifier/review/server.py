@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .config import DATA_DIR, LABELS_PATH, PORT, QUEUE_PATH
+from ..config import DATA_DIR, LABELS_PATH, PORT, QUEUE_PATH
 
 LABELS = LABELS_PATH
 QUEUE = QUEUE_PATH

@@ -1,10 +1,10 @@
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = Path(os.environ.get("TOC_DATA", ROOT / "data"))
-LABELS_PATH = Path(os.environ.get("TOC_LABELS", DATA_DIR / "labels.jsonl"))
-QUEUE_PATH = Path(os.environ.get("TOC_QUEUE", DATA_DIR / "queue.json"))
+from ..contract.paths import DATA_DIR, LABELS, QUEUE
+
+LABELS_PATH = LABELS
+QUEUE_PATH = QUEUE
 PORT = int(os.environ.get("TOC_PORT", 8765))
 
 IMMICH_CONTAINER = os.environ.get("TOC_CONTAINER", "immich_postgres")

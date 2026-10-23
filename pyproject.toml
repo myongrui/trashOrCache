@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-toc = "trashorcache.cli:main"
+toc-classifier = "trashorcache.classifier.cli:main"
+toc-flow = "trashorcache.flow.cli:main"
 
 [tool.uv]
 package = true
