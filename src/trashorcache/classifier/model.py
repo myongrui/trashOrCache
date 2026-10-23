@@ -55,13 +55,6 @@ def main() -> None:
     ap.add_argument("--csv", default=None, help="also write dispose candidates to this CSV")
     args = ap.parse_args()
 
-    from .feedback import ingest
-
-    fb = ingest()
-    if fb["added"]:
-        print(f"feedback: +{fb['added']} labels, {fb['skipped']} already known, "
-              f"{fb['pruned']} ledger rows pruned, {fb['pending']} still pending")
-
     df, X = load_aligned()
     pos = {a: i for i, a in enumerate(df["id"].to_list())}
     rows = [r for r in unique_labels() if r["label"] in ("keep", "dispose") and r["asset_id"] in pos]
@@ -69,9 +62,8 @@ def main() -> None:
     y = np.array([r["label"] == "dispose" for r in rows], dtype=np.int64)
     print(f"{len(y)} unique labels   dispose {y.mean():.1%}")
 
-    q_quality = pl.read_parquet(DATA_DIR / "quality.parquet")
-    q_sharp = q_quality["sharpness_center"].to_numpy()
-    q_face = q_quality["face_area_max"].fill_null(0).to_numpy()
+    q_sharp = df["sharpness_center"].fill_null(0.0).to_numpy()
+    q_face = df["face_area_max"].fill_null(0.0).to_numpy()
     T, mu, sd = standardize(tabular_raw(df))
     Q = standardize(quality_raw(df))[0]
     F = np.c_[X, T, Q]

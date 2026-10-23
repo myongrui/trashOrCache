@@ -2,7 +2,7 @@
 
 Survival is keep, full stop. The user disposes by trashing; anything still
 standing when observe runs is something they chose to keep. Survivors are moved
-from their proposal tag to `Keep`, so the tag itself stays a readable ledger.
+from their proposal tag to `Keep`, so the tag itself stays a readable record.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 
-from ..contract import ledger
+from ..contract import db
 from .immich import add_assets, ensure_tag, get_asset, remove_assets
 
 WORKERS = 16
@@ -33,15 +33,17 @@ def _verify(rows: list[dict], keep_tag_id: str) -> list[str]:
 def main() -> None:
     ap = argparse.ArgumentParser(prog="toc-flow observe")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--apply", action="store_true", help="move tags and update the ledger")
+    ap.add_argument("--apply", action="store_true", help="move tags and record the decision")
     args = ap.parse_args()
 
-    con = ledger.connect()
-    pending = ledger.pending(con)
+    con = db.connect()
+    pending = [dict(r) for r in con.execute(
+        "SELECT asset_id, tag, tag_id, batch_id FROM assets "
+        "WHERE decision IS NULL AND proposed_at IS NOT NULL ORDER BY proposed_at, asset_id")]
     if args.limit:
         pending = pending[: args.limit]
     if not pending:
-        print(f"nothing to observe ({ledger.counts(con)})")
+        print(f"nothing to observe ({db.counts(con)})")
         return
 
     print(f"observing {len(pending)} pending proposals from "
@@ -92,5 +94,10 @@ def main() -> None:
 
     decided = {r["asset_id"]: o for r, o in zip(pending, outcomes) if o == "dispose"}
     decided.update({r["asset_id"]: "keep" for r in keeps})
-    ledger.mark_decided(con, decided)
-    print(f"\nledger: {ledger.counts(con)}")
+    at = db.now()
+    con.executemany(
+        "UPDATE assets SET decision=?, decision_source='observe', decided_at=? "
+        "WHERE asset_id=? AND decision IS NULL",
+        [(o, at, a) for a, o in decided.items()])
+    con.commit()
+    print(f"\ndb: {db.counts(con)}")

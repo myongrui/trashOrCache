@@ -4,9 +4,9 @@ import importlib
 import sys
 
 COMMANDS = {
-    "ingest": ("ingest", "Immich -> manifest.parquet (read-only)"),
-    "embed": ("embed", "SigLIP2 -> embeddings.npy"),
-    "features": ("features", "pixel / face / signature features"),
+    "ingest": ("ingest", "pull Immich metadata into toc.db (read-only)"),
+    "embed": ("embed", "SigLIP2 -> toc.db vectors"),
+    "features": ("features", "pixel / face / signature features -> toc.db"),
     "dupes": ("group", "near-identical groups (corr >= 0.98)"),
     "variants": ("group", "same-day variant groups (corr >= 0.92)"),
     "run": ("model", "fit the filter, write scores + action bands"),
@@ -14,6 +14,8 @@ COMMANDS = {
     "queue": ("review.queue", "build a review queue"),
     "bench": ("evaluate.bench", "method comparison harness"),
     "agree": ("evaluate.agree", "label self-agreement (kappa)"),
+    "export": ("export", "write labels (and optionally vectors) out as files"),
+    "migrate": ("migrate", "import legacy parquet/npy/jsonl into toc.db"),
 }
 
 KINDS = {"dupes": "dupes", "variants": "variants"}

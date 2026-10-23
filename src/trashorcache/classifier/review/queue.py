@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 
 from ..config import DATA_DIR
-from ..store import LABELS, SCORES, clusters, load_aligned
+from ..store import SCORES, clusters, load_aligned, read_labels
 
 QUEUE = DATA_DIR / "queue.json"
 
@@ -43,9 +43,7 @@ def nn_tour(V: np.ndarray) -> list[int]:
 
 
 def labelled_ids() -> set[str]:
-    if not LABELS.exists():
-        return set()
-    return {json.loads(line)["asset_id"] for line in LABELS.read_text().splitlines() if line.strip()}
+    return {r["asset_id"] for r in read_labels()}
 
 
 def coverage(df: pl.DataFrame, X: np.ndarray, n: int, n_clusters: int, seed: int, done: set[str]) -> list[int]:

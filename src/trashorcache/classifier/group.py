@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 
 from .config import DATA_DIR
-from .store import load_aligned
+from .store import load_aligned, signatures
 
 CHUNK = 1000
 MICRO = 800
@@ -126,19 +126,16 @@ def merge_groups(groups, S, days, order, thr, cap) -> list[list[int]]:
 
 def _context():
     df, X = load_aligned()
-    q = pl.read_parquet(DATA_DIR / "quality.parquet")
-    if q["id"].to_list() != df["id"].to_list():
-        raise SystemExit("quality.parquet misaligned with manifest - run `toc quality`")
-    S = np.load(DATA_DIR / "signatures.npy").astype(np.float32)
-    sharp = q["sharpness_center"].to_numpy()
-    face = q["face_area_max"].fill_null(0.0).to_numpy()
+    S = signatures(df)
+    sharp = df["sharpness_center"].fill_null(0.0).to_numpy()
+    face = df["face_area_max"].fill_null(0.0).to_numpy()
     pixels = (df["width"].fill_null(0) * df["height"].fill_null(0)).to_numpy()
     sizes = df["file_size"].fill_null(0).to_numpy()
     app = df["source_app"].fill_null("").to_list()
     is_wa = np.array([a == "whatsapp" for a in app])
     keep_score = np.log1p(pixels) + sharp * 0.15 + np.log1p(sizes) * 0.2 - is_wa * 1.5 + face * 2.0
     days = np.array([d.strftime("%Y-%m-%d") if d else "" for d in df["file_created_at"].to_list()])
-    return df, X, q, S, sharp, sizes, app, is_wa, keep_score, days
+    return df, X, S, sharp, sizes, app, is_wa, keep_score, days
 
 
 def _emit(df, groups, score, S, days, kind, out_path, extra=None):
@@ -184,7 +181,7 @@ def dupes_main() -> None:
     ap.add_argument("--out", default=str(DATA_DIR / "groups.json"))
     args = ap.parse_args()
 
-    df, _, _, S, _, _, _, _, score, days = _context()
+    df, _, S, _, _, _, _, score, days = _context()
     print(f"grouping at corr >= {args.thr} ...")
     groups = [b.tolist() for b in components(S, args.thr) if len(b) > 1]
     out = _emit(df, groups, score, S, days, "duplicate", args.out)
@@ -215,7 +212,7 @@ def variants_main() -> None:
     ap.add_argument("--method", choices=["components", "complete"], default="complete")
     args = ap.parse_args()
 
-    df, X, q, S, sharp, sizes, app, is_wa, keep_score, days = _context()
+    df, X, S, sharp, sizes, app, is_wa, keep_score, days = _context()
     ids = df["id"].to_list()
     n = len(ids)
 

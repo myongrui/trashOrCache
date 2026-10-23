@@ -12,21 +12,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from ..config import DATA_DIR, LABELS_PATH, PORT, QUEUE_PATH
+from ..config import PORT, QUEUE_PATH
+from ...contract import db
 
-LABELS = LABELS_PATH
 QUEUE = QUEUE_PATH
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI()
 
 QUEUE_ITEMS: list[dict] = json.loads(QUEUE.read_text())
-PATHS: dict[str, str] = dict(
-    zip(
-        pl.read_parquet(DATA_DIR / "manifest.parquet")["id"].to_list(),
-        pl.read_parquet(DATA_DIR / "manifest.parquet")["preview_path"].to_list(),
-    )
-)
+_con = db.connect()
+PATHS: dict[str, str] = {r[0]: r[1] for r in _con.execute(
+    "SELECT asset_id, preview_path FROM assets WHERE preview_path IS NOT NULL")}
 
 VALID = {"keep", "dispose", "skip"}
 
@@ -42,9 +39,19 @@ class GroupDecision(BaseModel):
     dispose: list[str]
 
 def read_labels() -> list[dict]:
-    if not LABELS.exists():
-        return []
-    return [json.loads(line) for line in LABELS.read_text().splitlines() if line.strip()]
+    con = db.connect()
+    return [{"asset_id": r[0], "label": r[1], "source": r[2], "at": r[3], "group_id": r[4]}
+            for r in con.execute(
+                "SELECT asset_id, decision, decision_source, decided_at, group_id "
+                "FROM assets WHERE decision IS NOT NULL ORDER BY decided_at")]
+
+
+def decide(asset_id: str, label: str, source: str, group_id: str | None = None) -> None:
+    con = db.connect()
+    con.execute(
+        "UPDATE assets SET decision=?, decision_source=?, decided_at=?, group_id=COALESCE(?, group_id) "
+        "WHERE asset_id=?", (label, source, db.now(), group_id, asset_id))
+    con.commit()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -80,30 +87,17 @@ def add(body: Label) -> JSONResponse:
     if body.label not in VALID:
         raise HTTPException(400, f"bad label {body.label}")
 
-    row = {
-        "asset_id": body.asset_id,
-        "label": body.label,
-        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    with LABELS.open("a") as fh:
-        fh.write(json.dumps(row) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    return JSONResponse({"ok": True, **row})
+    decide(body.asset_id, body.label, "labeler")
+    return JSONResponse({"ok": True, "asset_id": body.asset_id, "label": body.label, "at": db.now()})
 
 
 @app.post("/api/label_group")
 def label_group(body: GroupDecision) -> JSONResponse:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    rows = [{"asset_id": a, "label": "keep", "group_id": body.group_id, "at": now} for a in body.keep]
-    rows += [{"asset_id": a, "label": "dispose", "group_id": body.group_id, "at": now} for a in body.dispose]
-    if rows:
-        with LABELS.open("a") as fh:
-            for r in rows:
-                fh.write(json.dumps(r) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-    return JSONResponse({"ok": True, "rows": len(rows)})
+    for a in body.keep:
+        decide(a, "keep", "labeler", body.group_id)
+    for a in body.dispose:
+        decide(a, "dispose", "labeler", body.group_id)
+    return JSONResponse({"ok": True, "rows": len(body.keep) + len(body.dispose)})
 
 
 @app.get("/api/agreement")
@@ -137,25 +131,30 @@ def agreement() -> JSONResponse:
 
 @app.post("/api/undo")
 def undo() -> JSONResponse:
-    rows = read_labels()
-    if not rows:
+    con = db.connect()
+    last = con.execute(
+        "SELECT asset_id, decision, decided_at, group_id FROM assets "
+        "WHERE decision IS NOT NULL ORDER BY decided_at DESC, asset_id DESC LIMIT 1").fetchone()
+    if last is None:
         raise HTTPException(400, "nothing to undo")
-    last = rows.pop()
-    dropped = [last]
-    while rows and last.get("group_id") and rows[-1].get("group_id") == last["group_id"]:
-        dropped.append(rows.pop())
-    shutil.copy2(LABELS, LABELS.with_suffix(".jsonl.bak"))
-    tmp = LABELS.with_suffix(".jsonl.tmp")
-    with tmp.open("w") as fh:
-        fh.write("".join(json.dumps(r) + "\n" for r in rows))
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, LABELS)
-    return JSONResponse({"ok": True, "dropped": dropped[0], "rows": len(dropped)})
+    group_id = last[3]
+    if group_id:
+        victims = [r[0] for r in con.execute(
+            "SELECT asset_id FROM assets WHERE decided_at=? AND group_id=?",
+            (last[2], group_id))]
+    else:
+        victims = [last[0]]
+    con.executemany(
+        "UPDATE assets SET decision=NULL, decision_source=NULL, decided_at=NULL WHERE asset_id=?",
+        [(a,) for a in victims])
+    con.commit()
+    return JSONResponse({"ok": True,
+                         "dropped": {"asset_id": last[0], "label": last[1], "group_id": group_id},
+                         "rows": len(victims)})
 
 
 def main() -> None:
-    print(f"labels -> {LABELS}\nqueue  -> {QUEUE}\nserving on http://127.0.0.1:{PORT}", flush=True)
+    print(f"db     -> {db.DB}\nqueue  -> {QUEUE}\nserving on http://127.0.0.1:{PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
 
 

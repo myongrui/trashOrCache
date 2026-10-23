@@ -6,18 +6,18 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from ..contract import ledger
-from ..contract.paths import DECISIONS, LABELS
+from ..contract import db
+from ..contract.paths import DECISIONS
 from .immich import ACTION_TAGS, add_assets, ensure_tag
 
 CHUNK = 500
 PRIORITY = {"dispose": 0, "review": 1, "keep": 2}
 
 
-def settled_ids() -> set[str]:
-    if not LABELS.exists():
-        return set()
-    return {json.loads(l)["asset_id"] for l in LABELS.read_text().splitlines() if l.strip()}
+def taken_ids(con) -> set[str]:
+    """Assets already decided, or already waiting on a decision."""
+    return {r[0] for r in con.execute(
+        "SELECT asset_id FROM assets WHERE decision IS NOT NULL OR proposed_at IS NOT NULL")}
 
 
 def load_decisions() -> list[dict]:
@@ -35,8 +35,8 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true", help="actually write tags to Immich")
     args = ap.parse_args()
 
-    con = ledger.connect()
-    skip = settled_ids() | ledger.pending_ids(con)
+    con = db.connect()
+    skip = taken_ids(con)
     rows = [d for d in load_decisions() if d["asset_id"] not in skip]
     if args.limit:
         rows = rows[: args.limit]
@@ -45,9 +45,9 @@ def main() -> None:
     for d in rows:
         by_tag.setdefault(ACTION_TAGS[d["action"]], []).append(d)
 
-    c = ledger.counts(con)
+    c = db.counts(con)
     print(f"{len(rows)} assets to propose "
-          f"({len(skip)} skipped: {c['pending']} already pending, rest labelled)")
+          f"({len(skip)} skipped: {c['pending']} already pending, {c['decided']} decided)")
     for tag, items in sorted(by_tag.items()):
         print(f"  {tag:8s} {len(items):5d}")
     calls = sum((len(v) + args.chunk - 1) // args.chunk for v in by_tag.values())
@@ -68,16 +68,13 @@ def main() -> None:
             chunk = items[start : start + args.chunk]
             ids = [d["asset_id"] for d in chunk]
             add_assets(tag_obj["id"], ids)
-            ledger.upsert(con, [{
-                "asset_id": d["asset_id"],
-                "batch_id": batch,
-                "action": d["action"],
-                "tag": tag,
-                "tag_id": tag_obj["id"],
-                "group_id": d.get("group_id"),
-                "proposed_at": ledger.now(),
-            } for d in chunk])
+            con.executemany(
+                "UPDATE assets SET batch_id=?, action=?, tag=?, tag_id=?, group_id=?, proposed_at=? "
+                "WHERE asset_id=?",
+                [(batch, d["action"], tag, tag_obj["id"], d.get("group_id"), db.now(), d["asset_id"])
+                 for d in chunk])
+            con.commit()
             written += len(chunk)
             print(f"  {written}/{len(rows)} tagged", flush=True)
 
-    print(f"\ntagged {written} assets; ledger {ledger.counts(con)}")
+    print(f"\ntagged {written} assets; db {db.counts(con)}")

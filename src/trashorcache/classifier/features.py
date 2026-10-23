@@ -10,7 +10,7 @@ import polars as pl
 from PIL import Image
 
 from .config import DATA_DIR, IMMICH_CONTAINER, IMMICH_DB
-from .store import load_aligned
+from ..contract import db
 
 SIZE = 512
 FIELDS = [
@@ -119,37 +119,44 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
 
-    df, _ = load_aligned()
+    con = db.connect()
+    todo = con.execute(
+        "SELECT a.asset_id, a.preview_path FROM assets a "
+        "LEFT JOIN features f ON f.asset_id = a.asset_id "
+        "WHERE a.preview_exists = 1 AND f.asset_id IS NULL ORDER BY a.asset_id").fetchall()
     if args.limit:
-        df = df.head(args.limit)
-    paths = df["preview_path"].to_list()
-    ids = df["id"].to_list()
+        todo = todo[: args.limit]
+    if not todo:
+        print(f"all previews already have features ({db.counts(con)})")
+        return
+    ids = [r[0] for r in todo]
+    paths = [r[1] for r in todo]
     print(f"computing quality features for {len(paths)} previews with {args.workers} workers")
 
     with Pool(args.workers) as pool:
         rows = list(pool.imap(features, paths, chunksize=32))
 
-    ok = [r for r in rows if r is not None]
-    print(f"  ok {len(ok)}   failed {len(rows) - len(ok)}")
-    px = pl.DataFrame(np.array([r[0] for r in ok], dtype=np.float32), schema=FIELDS[:11], orient="row")
-    px = px.with_columns(
-        pl.Series("id", [i for i, r in zip(ids, rows) if r is not None])
-    )
-    sig = np.stack([r[1] for r in ok]).astype(np.float16)
-    np.save(DATA_DIR / "signatures.npy", sig)
-    print(f"  signatures {sig.shape} -> signatures.npy")
+    good = [(i, r) for i, r in zip(ids, rows) if r is not None]
+    print(f"  ok {len(good)}   failed {len(rows) - len(good)}")
+    if not good:
+        return
 
-    q = (
-        pl.DataFrame({"id": df["id"]})
-        .join(px, on="id", how="left")
-        .join(face_features(), on="id", how="left")
-        .with_columns(pl.col("face_area_max", "face_area_sum", "big_faces").fill_null(0.0))
+    faces = {r["id"]: r for r in face_features().to_dicts()}
+    fcols = db.FEATURE_COLUMNS
+    f_rows, s_rows = [], []
+    for asset_id, (floats, sig) in good:
+        face = faces.get(asset_id, {})
+        values = list(floats) + [face.get("face_area_max", 0.0), face.get("face_area_sum", 0.0),
+                                 face.get("big_faces", 0.0)]
+        f_rows.append((asset_id, *values))
+        s_rows.append((asset_id, np.asarray(sig, dtype=np.float16).tobytes()))
 
-    )
-    q.write_parquet(DATA_DIR / "quality.parquet", compression="zstd")
-
-    print(f"\nwrote data/quality.parquet  {q.shape}  {q.estimated_size('mb'):.2f} MB")
-    print(q.describe())
+    con.executemany(
+        f"INSERT OR REPLACE INTO features (asset_id, {', '.join(fcols)}) "
+        f"VALUES ({', '.join('?' * (len(fcols) + 1))})", f_rows)
+    con.executemany("INSERT OR REPLACE INTO signatures (asset_id, sig) VALUES (?,?)", s_rows)
+    con.commit()
+    print(f"\nfeatures {len(f_rows)} rows, signatures {len(s_rows)} -> toc.db {db.counts(con)}")
 
 
 if __name__ == "__main__":

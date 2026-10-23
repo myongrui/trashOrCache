@@ -6,7 +6,8 @@ import subprocess
 
 import polars as pl
 
-from .config import DATA_DIR, IMMICH_CONTAINER, IMMICH_DB, LIBRARY_DIR, SQL, THUMBS_DIR
+from ..contract import db
+from .config import IMMICH_CONTAINER, IMMICH_DB, LIBRARY_DIR, SQL, THUMBS_DIR
 
 TS = "%Y-%m-%dT%H:%M:%S%.6fZ"
 
@@ -113,13 +114,44 @@ def _exists(path: str) -> bool:
     return Path(path).is_file()
 
 
+COLUMNS = [
+    "asset_id", "original_file_name", "source_app", "width", "height", "file_size",
+    "aspect_ratio", "file_created_at", "imported_at", "exif_taken_at", "make", "iso",
+    "latitude", "longitude", "city", "country", "ocr_chars", "face_count",
+    "preview_path", "preview_exists",
+]
+
+
+def _iso(v):
+    return v.isoformat() if v is not None else None
+
+
 def main() -> None:
     raw = fetch()
     df = build(raw)
+    con = db.connect()
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    out = DATA_DIR / "manifest.parquet"
-    df.write_parquet(out, compression="zstd")
+    rows = [(
+        df["id"][i], df["originalFileName"][i], df["source_app"][i], df["width"][i],
+        df["height"][i], df["file_size"][i], df["aspect_ratio"][i],
+        _iso(df["file_created_at"][i]), _iso(df["imported_at"][i]), _iso(df["exif_taken_at"][i]),
+        df["make"][i], df["iso"][i], df["latitude"][i], df["longitude"][i], df["city"][i],
+        df["country"][i], df["ocr_chars"][i], df["face_count"][i], df["preview_path"][i],
+        1 if df["preview_exists"][i] else 0,
+    ) for i in range(df.height)]
+
+    con.executemany(
+        f"INSERT INTO assets ({', '.join(COLUMNS)}) VALUES ({', '.join('?' * len(COLUMNS))}) "
+        "ON CONFLICT(asset_id) DO UPDATE SET "
+        + ", ".join(f"{c}=excluded.{c}" for c in COLUMNS[1:]) + ", purged_at=NULL", rows)
+
+    present = {r[0] for r in con.execute("SELECT asset_id FROM assets")}
+    live = set(df["id"].to_list())
+    vanished = present - live
+    if vanished:
+        con.executemany("UPDATE assets SET purged_at=?, preview_exists=0 WHERE asset_id=?",
+                        [(db.now(), a) for a in vanished])
+    con.commit()
 
     n = df.height
     have = int(df["preview_exists"].sum())
@@ -129,7 +161,9 @@ def main() -> None:
     print(f"ocr present    {int((df['ocr_chars'] > 0).sum())}")
     print(f"faces present  {int((df['face_count'] > 0).sum())}")
     print(f"gps present    {int(df['latitude'].is_not_null().sum())}")
-    print(f"size           {out.stat().st_size / 1e6:.2f} MB -> {out}")
+    c = db.counts(con)
+    print(f"newly purged   {len(vanished)} (rows kept, vectors kept)")
+    print(f"db             {c}")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoImageProcessor, SiglipVisionModel
 
+from ..contract import db
 from .config import DATA_DIR, MODEL_ID
 
 
@@ -45,12 +46,18 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
-    manifest_path = DATA_DIR / "manifest.parquet"
-    df = pl.read_parquet(manifest_path).filter(pl.col("preview_exists"))
+    con = db.connect()
+    todo = con.execute(
+        "SELECT a.asset_id, a.preview_path FROM assets a "
+        "LEFT JOIN vectors v ON v.asset_id = a.asset_id "
+        "WHERE a.preview_exists = 1 AND v.asset_id IS NULL ORDER BY a.asset_id").fetchall()
     if args.limit:
-        df = df.head(args.limit)
-
-    paths = df["preview_path"].to_list()
+        todo = todo[: args.limit]
+    if not todo:
+        print(f"all previews already embedded ({db.counts(con)})")
+        return
+    ids = [r[0] for r in todo]
+    paths = [r[1] for r in todo]
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
     print(f"device {device}  dtype {dtype}  images {len(paths)}")
@@ -84,8 +91,10 @@ def main() -> None:
     if not np.isfinite(out).all():
         raise SystemExit("non-finite values in embeddings")
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(DATA_DIR / "embeddings.npy", out)
+    con.executemany(
+        "INSERT OR REPLACE INTO vectors (asset_id, model_id, embedded_at, vec) VALUES (?,?,?,?)",
+        [(ids[i], MODEL_ID, db.now(), out[i].tobytes()) for i in range(len(ids))])
+    con.commit()
 
     meta = {
         "model": MODEL_ID,
@@ -95,8 +104,7 @@ def main() -> None:
         "dtype": str(dtype).replace("torch.", ""),
         "device": device,
         "count": int(out.shape[0]),
-        "manifest_sha256": sha256(manifest_path),
-        "manifest_rows": df.height,
+        "db": str(db.DB),
         "processor": processor.to_dict(),
         "torch": torch.__version__,
         "elapsed_seconds": round(elapsed, 1),
@@ -105,7 +113,7 @@ def main() -> None:
     (DATA_DIR / "embeddings.meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     norms = np.linalg.norm(out, axis=1)
-    print(f"wrote {out.shape} float32 -> {DATA_DIR / 'embeddings.npy'}")
+    print(f"wrote {out.shape} float32 -> toc.db ({db.counts(con)['assets']} assets)")
     print(f"norm mean {norms.mean():.4f}  min {norms.min():.4f}  max {norms.max():.4f}")
     print(f"identical rows: {int(len(out) - len(np.unique(out, axis=0)))}")
 
